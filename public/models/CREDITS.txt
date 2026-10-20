@@ -1,0 +1,8 @@
+robot.glb
+  "RobotExpressive" by Tomás Laulhé (Quaternius), modifications by Don McCurdy.
+  License: CC0 1.0 (public domain dedication). https://creativecommons.org/publicdomain/zero/1.0/
+  Used for NULL's walker and brute robots. The game recolours it and merges its parts
+  into one skinned mesh at load time.
+
+Everything else you see in the game (city, cars, people, drones, turrets, signs, effects,
+music and sound) is generated in code by this project.

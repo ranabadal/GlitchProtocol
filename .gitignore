@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+next-env.d.ts
+coverage/
+journey-report.json
+
+# local scratch and test output
+.scratch/

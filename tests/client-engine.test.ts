@@ -111,3 +111,48 @@ describe("ray and collision maths", () => {
     expect(hit!.y).toBeCloseTo(0, 6);
   });
 });
+
+describe("rides stay within what the server allows", () => {
+  it("the Skyline Metro stops at every station, stays on its track and is never faster than a car", async () => {
+    const { Metro } = await import("@/game/actors/Rides");
+    const { MAX_TRAVEL_SPEED } = await import("@/lib/shared/mission");
+    const metro = new Metro(new Colliders(), { value: 0 });
+    const docked = new Set<number>();
+    const p = new THREE.Vector3(), prev = new THREE.Vector3();
+    for (let k = 0; k < metro.trains.length; k++) {
+      let first = true;
+      for (let t = 0; t < 120; t += 0.25) {
+        const r = metro.trainS(k, t);
+        if (r.docked !== null) docked.add(r.docked);
+        metro.at(r.s, p);
+        // On the loop: one coordinate always sits on a ring road.
+        const ring = [metro.stations[0].track, metro.stations[2].track];
+        expect(Math.min(...[Math.abs(Math.abs(p.x) - Math.abs(ring[0].x)), Math.abs(Math.abs(p.z) - Math.abs(ring[0].z)), Math.abs(Math.abs(p.x) - Math.abs(ring[1].x)), Math.abs(Math.abs(p.z) - Math.abs(ring[1].z))])).toBeLessThan(260);
+        if (!first) expect(p.distanceTo(prev) / 0.25).toBeLessThan(MAX_TRAVEL_SPEED);
+        prev.copy(p);
+        first = false;
+      }
+    }
+    expect([...docked].sort()).toEqual([0, 1, 2, 3]);
+    // Someone waiting at a station never waits more than one gap between trains.
+    for (const st of metro.stations) expect(metro.nextAt(st, 13.7).wait).toBeLessThan(60);
+  });
+
+  it("the helicopter's top speed is below the server's travel limit", async () => {
+    const { HELI_MAX_SPEED } = await import("@/game/actors/Rides");
+    const { MAX_TRAVEL_SPEED } = await import("@/lib/shared/mission");
+    expect(HELI_MAX_SPEED).toBeLessThan(MAX_TRAVEL_SPEED);
+  });
+
+  it("the data truck the browser draws is where the server thinks it is", async () => {
+    const { courierPos } = await import("@/lib/shared/mission");
+    const { loopAround } = await import("@/lib/engine/templates/cityHeist");
+    const c = { id: "k0", name: "t", loop: loopAround(1, 2, true).pts, speed: 13, offset: 50, hp: 300 };
+    let last = courierPos(c, 0);
+    for (let s = 0.5; s < 200; s += 0.5) {
+      const p = courierPos(c, s);
+      expect(Math.hypot(p.x - last.x, p.z - last.z)).toBeLessThanOrEqual(13 * 0.5 + 1e-6);
+      last = p;
+    }
+  });
+});

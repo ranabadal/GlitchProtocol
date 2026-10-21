@@ -13,6 +13,9 @@ export const ACHIEVEMENTS = [
   { code: "LEGEND", title: "Legend", description: "Band 5 ka mission clear karo." },
   { code: "COMEBACK", title: "Comeback", description: "Do baar haarne ke baad jeeto." },
   { code: "EVENT_PLAYER", title: "Event player", description: "Ek shared event mission khelo." },
+  { code: "TITAN_SLAYER", title: "Titan slayer", description: "Ek TITAN robot ko giraao." },
+  { code: "TRUCK_STOPPER", title: "Truck stopper", description: "NULL ka data truck tod do." },
+  { code: "SHARD_HUNTER", title: "Shard hunter", description: "Ek mission ke saare data shards jama karo." },
 ] as const;
 
 export type AchievementCode = (typeof ACHIEVEMENTS)[number]["code"];
@@ -33,6 +36,9 @@ export interface AchievementContext {
   hackCount: number;
   hackTypesCracked: string[];
   timeLeftFrac: number;
+  titanDown?: boolean;
+  truckDown?: boolean;
+  allShards?: boolean;
 }
 
 /** Runs inside the finishing transaction, after the attempt row is written. Returns newly unlocked codes. */
@@ -52,6 +58,9 @@ export async function checkAchievements(db: DB, a: AchievementContext): Promise<
   await give("LEGEND", win && a.band === 5);
   await give("AGENT", a.bandAfter >= 3 || a.band >= 3);
   await give("EVENT_PLAYER", a.scope === "event");
+  await give("TITAN_SLAYER", !!a.titanDown);
+  await give("TRUCK_STOPPER", !!a.truckDown);
+  await give("SHARD_HUNTER", !!a.allShards);
   await give("ALL_HACKS", async () => {
     const rows = await db.prepare(`SELECT score_breakdown FROM attempts WHERE user_id = ?`).all<{ score_breakdown: string }>(a.userId);
     const types = new Set<string>(a.hackTypesCracked);

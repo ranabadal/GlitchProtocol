@@ -45,12 +45,12 @@ export function Minimap({ hudRef, pose, vaultBuildings, size = 210 }: { hudRef: 
         const dx = (mx - px) * k, dz = (mz - pz) * k;
         return [R + dx * cos - dz * sin, R + dx * sin + dz * cos];
       };
-      const order = ["robot", "turret", "fence", "barricade", "vault-done", "uplink", "vault"];
+      const order = ["metro", "heli", "shard", "robot", "turret", "fence", "barricade", "vault-done", "uplink", "core", "vault", "titan", "truck"];
       const sorted = [...hud.markers].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
       for (const m of sorted) {
         let [x, y] = screen(m);
         const d = Math.hypot(x - R, y - R);
-        const sticky = m.kind === "vault" || m.kind === "uplink";
+        const sticky = m.kind === "vault" || m.kind === "uplink" || m.kind === "titan" || m.kind === "truck" || m.kind === "core";
         if (d > R - 12 * dpr) {
           if (!sticky) continue;
           x = R + ((x - R) / d) * (R - 12 * dpr);
@@ -101,8 +101,8 @@ export function BigMap({ hud, vaultBuildings, onClose }: { hud: HudState; vaultB
       g.setTransform(1, 0, 0, 1, 0, 0);
       for (const m of h.markers) {
         const [x, y] = toMap(m.x, m.z);
-        drawMarker(g, m, x * k, y * k, (m.kind === "robot" ? 6 : 10) * dpr, m.kind === "vault" || (m.kind === "uplink" && h.cores === h.coresTotal));
-        if (m.label && (m.kind === "vault" || m.kind === "uplink" || m.kind === "vault-done")) {
+        drawMarker(g, m, x * k, y * k, (m.kind === "robot" ? 6 : m.kind === "shard" ? 8 : 10) * dpr, m.kind === "vault" || m.kind === "titan" || (m.kind === "uplink" && h.cores === h.coresTotal));
+        if (m.label && (m.kind === "vault" || m.kind === "uplink" || m.kind === "vault-done" || m.kind === "titan" || m.kind === "truck" || m.kind === "metro" || m.kind === "heli")) {
           g.font = `600 ${12 * dpr}px Rajdhani, sans-serif`;
           g.fillStyle = MARKER_COLORS[m.kind];
           g.textAlign = "center";

@@ -144,9 +144,10 @@ export interface RobotLook {
   glow: THREE.Color;
 }
 
-export const LOOKS: Record<"walker" | "brute", RobotLook> = {
+export const LOOKS: Record<"walker" | "brute" | "titan", RobotLook> = {
   walker: { main: new THREE.Color(0.05, 0.055, 0.065), grey: new THREE.Color(0.22, 0.24, 0.27), glow: new THREE.Color(1.0, 0.08, 0.18) },
   brute: { main: new THREE.Color(0.12, 0.03, 0.035), grey: new THREE.Color(0.08, 0.08, 0.09), glow: new THREE.Color(1.0, 0.45, 0.05) },
+  titan: { main: new THREE.Color(0.09, 0.02, 0.12), grey: new THREE.Color(0.16, 0.15, 0.2), glow: new THREE.Color(1.0, 0.1, 0.85) },
 };
 
 export interface FxUniforms {
@@ -323,8 +324,8 @@ class BlockRobot implements RobotVisual {
   dispose(): void { this.mat.dispose(); }
 }
 
-export function createRobotVisual(t: RobotTemplate | null, kind: "walker" | "brute", uTime: { value: number }): RobotVisual {
-  const height = kind === "brute" ? 3.5 : 2.3;
+export function createRobotVisual(t: RobotTemplate | null, kind: "walker" | "brute" | "titan", uTime: { value: number }): RobotVisual {
+  const height = kind === "titan" ? 6.2 : kind === "brute" ? 3.5 : 2.3;
   return t ? new SkinnedRobot(t, LOOKS[kind], height, uTime) : new BlockRobot(LOOKS[kind], height, uTime);
 }
 

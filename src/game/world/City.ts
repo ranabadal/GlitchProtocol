@@ -18,6 +18,8 @@ export interface CityUniforms {
   uHealCenter: { value: THREE.Vector2 };
   uHealRadius: { value: number };
   uGlyphs: { value: THREE.Texture };
+  /** 0 = night, 0.5 = sunset, 1 = day. */
+  uDay: { value: number };
 }
 
 export const PALETTE = [
@@ -51,10 +53,11 @@ function buildingMaterial(u: CityUniforms): THREE.MeshStandardMaterial {
         vGpStyle = aStyle;`);
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>
-        uniform float uTime; uniform float uCorrupt; uniform vec2 uHealCenter; uniform float uHealRadius;
+        uniform float uTime; uniform float uCorrupt; uniform vec2 uHealCenter; uniform float uHealRadius; uniform float uDay;
         uniform vec3 uPalette[5]; uniform sampler2D uGlyphs;
         varying vec3 vGpWorld; varying vec3 vGpN; flat varying float vGpTop; flat varying vec2 vGpStyle;
         ${GLSL_HASH}
+        vec3 gpDayCol = vec3(0.5);
         vec3 gpFacade(out float panel) {
           panel = 1.0;
           // Screen-space derivatives must be taken before any branch or early return.
@@ -64,10 +67,15 @@ function buildingMaterial(u: CityUniforms): THREE.MeshStandardMaterial {
           vec3 col = uPalette[style];
           float healed = smoothstep(uHealRadius, uHealRadius - 30.0, distance(vGpWorld.xz, uHealCenter));
           col = mix(col, vec3(0.75, 1.0, 1.0), healed * 0.6);
+          // Daylight materials: concrete, blue glass, sandstone, mauve panels; dark glass code towers.
+          vec3 dayBase = style == 0 ? vec3(0.62, 0.64, 0.66) : style == 1 ? vec3(0.36, 0.5, 0.64) : style == 2 ? vec3(0.74, 0.64, 0.52) : style == 3 ? vec3(0.62, 0.56, 0.64) : vec3(0.1, 0.16, 0.14);
+          dayBase *= 0.88 + 0.24 * gpH21(vec2(floor(vGpStyle.y * 997.0 + 0.5), 7.0));
           if (n.y > 0.5) {
             vec2 g = abs(fract(vGpWorld.xz / 3.0) - 0.5);
+            gpDayCol = vec3(0.44, 0.45, 0.47) * (0.9 + 0.1 * step(0.47, max(g.x, g.y)));
             return col * step(0.47, max(g.x, g.y)) * 0.12;
           }
+          gpDayCol = dayBase;
           float u = n.x > 0.5 ? vGpWorld.z : vGpWorld.x;
           float v = vGpWorld.y;
           vec3 e = col * smoothstep(0.45, 0.0, abs(v - (vGpTop - 0.35))) * 1.8;
@@ -89,6 +97,7 @@ function buildingMaterial(u: CityUniforms): THREE.MeshStandardMaterial {
             float trail = fract(yy / (50.0 + 40.0 * gpH21(vec2(cx, 3.0))) + gpH21(vec2(cx, 9.0)));
             e += mix(vec3(0.25, 1.0, 0.45), vec3(0.85, 1.0, 0.9), step(0.97, trail)) * glyph * pow(trail, 3.0) * 2.2;
             panel = 0.7;
+            gpDayCol = dayBase + vec3(0.05, 0.25, 0.12) * glyph * pow(trail, 3.0);
           } else {
             vec2 cell = vec2(u / 3.0, v / 3.5);
             vec2 id = floor(cell);
@@ -104,6 +113,10 @@ function buildingMaterial(u: CityUniforms): THREE.MeshStandardMaterial {
             float gpFar = smoothstep(0.18, 0.55, max(gpFw.x, gpFw.y));
             float gpWin = mix(win * lit * tone, 0.37 * (0.5 + healed * 0.35) * 0.72, gpFar);
             e += wc * gpWin * 0.8 * (v > 7.0 ? 1.0 : 0.0);
+            // By day the windows are dark reflective glass set into the facade.
+            float dayWin = mix(win, 0.45, gpFar) * (v > 7.0 ? 1.0 : 0.0);
+            gpDayCol = mix(dayBase, vec3(0.14, 0.22, 0.32) + 0.06 * tone, dayWin * 0.8);
+            if (v < 6.0 && v > 0.8) gpDayCol = mix(gpDayCol, vec3(0.1, 0.13, 0.16), 0.7);
             // Street-level storefront glow.
             e += col * step(v, 6.0) * step(0.8, v) * 0.22 * step(0.15, fract(u / 6.0));
             panel = 0.85 + 0.3 * step(0.5, fract(u / 3.0));
@@ -113,9 +126,9 @@ function buildingMaterial(u: CityUniforms): THREE.MeshStandardMaterial {
         }`)
       .replace("#include <color_fragment>", `#include <color_fragment>
         float gpPanel; vec3 gpE = gpFacade(gpPanel);
-        diffuseColor.rgb *= gpPanel;`)
+        diffuseColor.rgb = mix(diffuseColor.rgb * gpPanel, gpDayCol, uDay);`)
       .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
-        totalEmissiveRadiance += gpE;`);
+        totalEmissiveRadiance += gpE * mix(1.0, 0.2, uDay);`);
   };
   return m;
 }
@@ -131,7 +144,7 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
         vGpWorld = (modelMatrix * vec4(position, 1.0)).xyz;`);
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", `#include <common>
-        uniform float uTime; uniform float uKinds[49]; uniform vec2 uHealCenter; uniform float uHealRadius;
+        uniform float uTime; uniform float uKinds[49]; uniform vec2 uHealCenter; uniform float uHealRadius; uniform float uDay;
         varying vec3 vGpWorld;
         ${GLSL_HASH}
         const float PITCH = ${PITCH.toFixed(1)};
@@ -140,6 +153,7 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
         const float WALK = ${(ROAD / 2 + SIDEWALK).toFixed(1)};
         const float EDGE = ${HALF.toFixed(1)};
         vec3 gpEmit = vec3(0.0);
+        vec3 gpDayG = vec3(0.35);
         float gpRough = 0.5;
         vec3 gpGround() {
           vec2 p = vGpWorld.xz;
@@ -148,6 +162,7 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
             float line = step(0.46, max(g.x, g.y));
             gpEmit = vec3(0.1, 0.9, 0.45) * line * 0.25 * (0.6 + 0.4 * sin(uTime * 2.0 + p.x * 0.05));
             gpRough = 0.9;
+            gpDayG = vec3(0.22, 0.27, 0.2);
             return vec3(0.0);
           }
           vec2 q = (p - R0) / PITCH;
@@ -170,6 +185,7 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
               if ((dd.y > HALFW - 3.2 && dd.x < HALFW - 0.6) && fract(p.x / 1.4) < 0.5) gpEmit += vec3(0.75) * 0.22;
               if ((dd.x > HALFW - 3.2 && dd.y < HALFW - 0.6) && fract(p.y / 1.4) < 0.5) gpEmit += vec3(0.75) * 0.22;
             }
+            gpDayG = vec3(0.13, 0.135, 0.145) * (0.9 + 0.2 * gpH21(floor(p * 0.5)));
             return c;
           }
           if (dr.x < WALK || dr.y < WALK) {
@@ -178,6 +194,7 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
             gpRough = 0.7;
             float curb = (dr.x < HALFW + 0.25 || dr.y < HALFW + 0.25) ? 1.0 : 0.0;
             gpEmit += vec3(0.2, 0.9, 1.0) * curb * 0.35;
+            gpDayG = vec3(0.5, 0.49, 0.47) * (0.85 + 0.15 * tile) * (1.0 - curb * 0.35);
             return vec3(0.07, 0.075, 0.085) * (0.85 + 0.15 * tile);
           }
           float bj = floor((p.x - R0) / PITCH);
@@ -187,6 +204,7 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
           if (kind > 3.5) {
             gpRough = 0.95;
             float n = gpH21(floor(p * 1.5));
+            gpDayG = vec3(0.17, 0.34, 0.12) * (0.75 + 0.5 * n);
             return vec3(0.01, 0.05, 0.03) * (0.7 + 0.6 * n);
           }
           if (kind > 2.5) {
@@ -194,25 +212,30 @@ function groundMaterial(u: CityUniforms, blockKinds: number[]): THREE.MeshStanda
             float line = step(0.48, max(g.x, g.y));
             gpEmit += vec3(0.2, 1.0, 0.7) * line * 0.25;
             gpRough = 0.3;
+            gpDayG = vec3(0.6, 0.6, 0.57) * (0.92 + 0.08 * line);
             return vec3(0.03, 0.04, 0.045);
           }
           if (kind > 0.5 && kind < 1.5) {
             float r = length(p - vec2(${blockCenter(3).toFixed(1)}));
             gpEmit += vec3(1.0, 0.1, 0.2) * step(0.92, fract(r / 4.0 - uTime * 0.3)) * 0.4;
             gpRough = 0.25;
+            gpDayG = vec3(0.24, 0.1, 0.12);
             return vec3(0.02, 0.01, 0.015);
           }
           vec2 g = abs(fract(p / 5.0) - 0.5);
           gpRough = 0.6;
+          gpDayG = vec3(0.38, 0.38, 0.37) * (0.9 + 0.1 * step(0.48, max(g.x, g.y)));
           return vec3(0.045, 0.05, 0.055) * (0.85 + 0.15 * step(0.48, max(g.x, g.y)));
         }`)
       .replace("#include <color_fragment>", `#include <color_fragment>
-        diffuseColor.rgb = gpGround();`)
+        vec3 gpNight = gpGround();
+        // By day, lane lines and curbs are paint rather than glow.
+        diffuseColor.rgb = mix(gpNight, min(gpDayG + gpEmit * 1.6, vec3(0.95)), uDay);`)
       .replace("#include <roughnessmap_fragment>", `#include <roughnessmap_fragment>
         roughnessFactor = gpRough;`)
       .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
         float gpHeal = smoothstep(uHealRadius, uHealRadius - 40.0, distance(vGpWorld.xz, uHealCenter));
-        totalEmissiveRadiance += gpEmit * (1.0 + gpHeal * 1.5);`);
+        totalEmissiveRadiance += gpEmit * (1.0 + gpHeal * 1.5) * (1.0 - uDay * 0.85);`);
   };
   return m;
 }
@@ -225,6 +248,12 @@ export class CityView {
   private signMat: THREE.ShaderMaterial | null = null;
   private billboardMat: THREE.ShaderMaterial | null = null;
   private curtainMat: THREE.ShaderMaterial | null = null;
+  /** Materials that change colour between night and day: [material, night, day, night glow, day glow]. */
+  private dayMats: [THREE.MeshStandardMaterial | THREE.MeshBasicMaterial, THREE.Color, THREE.Color, number, number][] = [];
+  private shade(m: THREE.MeshStandardMaterial | THREE.MeshBasicMaterial, day: number, glowNight = 0, glowDay = 0): typeof m {
+    this.dayMats.push([m, m.color.clone(), new THREE.Color(day), glowNight, glowDay]);
+    return m;
+  }
   uplinkTowers: { x: number; z: number; beacon: THREE.Mesh }[] = [];
 
   constructor(colliders: Colliders, opts: { hollow: Set<string> }) {
@@ -235,6 +264,7 @@ export class CityView {
       uHealCenter: { value: new THREE.Vector2(9999, 9999) },
       uHealRadius: { value: 0 },
       uGlyphs: { value: glyphAtlas() },
+      uDay: { value: 0 },
     };
     const glyphs = this.uniforms.uGlyphs.value;
     glyphs.generateMipmaps = false;
@@ -251,7 +281,7 @@ export class CityView {
     // ---- curbs (visual only)
     const curbGeo = new THREE.BoxGeometry(1, 0.18, 1);
     curbGeo.translate(0, 0.09, 0);
-    const curbs = new THREE.InstancedMesh(curbGeo, new THREE.MeshStandardMaterial({ color: 0x1a2128, roughness: 0.8 }), city.blocks.length * 4);
+    const curbs = new THREE.InstancedMesh(curbGeo, this.shade(new THREE.MeshStandardMaterial({ color: 0x1a2128, roughness: 0.8 }), 0x9a9a95), city.blocks.length * 4);
     const m4 = new THREE.Matrix4();
     let ci = 0;
     for (const b of city.blocks) {
@@ -396,13 +426,14 @@ export class CityView {
         }
       }
     }
-    const poleMesh = new THREE.InstancedMesh(poleGeo, new THREE.MeshStandardMaterial({ color: 0x1b2229, metalness: 0.7, roughness: 0.45 }), spots.length);
+    const poleMesh = new THREE.InstancedMesh(poleGeo, this.shade(new THREE.MeshStandardMaterial({ color: 0x1b2229, metalness: 0.7, roughness: 0.45 }), 0x5d646c), spots.length);
     const lampMesh = new THREE.InstancedMesh(lampGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), spots.length);
     const poolMesh = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ map: radialTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
       spots.length,
     );
+    this.lampPools = poolMesh.material as THREE.MeshBasicMaterial;
     const cool = new THREE.Color(0.55, 1.6, 1.4), warm = new THREE.Color(2.0, 1.2, 0.5);
     spots.forEach((s, i) => {
       const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), s.rot);
@@ -419,8 +450,8 @@ export class CityView {
     this.group.add(poleMesh, lampMesh, poolMesh);
 
     // ---- park trees (neon canopies)
-    const trunkMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.3, 1, 6).translate(0, 0.5, 0), new THREE.MeshStandardMaterial({ color: 0x2a1f1a, roughness: 0.9 }), city.trees.length);
-    const canopyMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), new THREE.MeshStandardMaterial({ color: 0x0a2a1a, emissive: 0x1aff7a, emissiveIntensity: 0.35, roughness: 0.6, flatShading: true }), city.trees.length);
+    const trunkMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.3, 1, 6).translate(0, 0.5, 0), this.shade(new THREE.MeshStandardMaterial({ color: 0x2a1f1a, roughness: 0.9 }), 0x5a4232), city.trees.length);
+    const canopyMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), this.shade(new THREE.MeshStandardMaterial({ color: 0x0a2a1a, emissive: 0x1aff7a, emissiveIntensity: 0.35, roughness: 0.6, flatShading: true }), 0x3f8f34, 0.35, 0.04), city.trees.length);
     city.trees.forEach((t, i) => {
       m4.compose(new THREE.Vector3(t.x, 0, t.z), new THREE.Quaternion(), new THREE.Vector3(1, t.h * 0.55, 1));
       trunkMesh.setMatrixAt(i, m4);
@@ -440,7 +471,7 @@ export class CityView {
       new THREE.SphereGeometry(3.2, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2.5).rotateX(Math.PI * 0.7).translate(0, 33, 1),
       new THREE.CylinderGeometry(0.15, 0.15, 8, 4).translate(0, 38, 0),
     ])!;
-    const towers = new THREE.InstancedMesh(towerGeo, new THREE.MeshStandardMaterial({ color: 0x1d262e, metalness: 0.8, roughness: 0.35, emissive: 0x0a3a2a, emissiveIntensity: 0.6, side: THREE.DoubleSide }), plazas.length);
+    const towers = new THREE.InstancedMesh(towerGeo, this.shade(new THREE.MeshStandardMaterial({ color: 0x1d262e, metalness: 0.8, roughness: 0.35, emissive: 0x0a3a2a, emissiveIntensity: 0.6, side: THREE.DoubleSide }), 0x8d9aa4, 0.6, 0.15), plazas.length);
     const beaconGeo = new THREE.CylinderGeometry(0.9, 0.9, 400, 8, 1, true).translate(0, 200, 0);
     plazas.forEach((p, i) => {
       m4.makeTranslation(p.x, 0, p.z);
@@ -478,14 +509,14 @@ export class CityView {
 
     // ---- edge of the world: a curtain of falling code
     this.curtainMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: this.uniforms.uTime, uGlyphs: this.uniforms.uGlyphs },
+      uniforms: { uTime: this.uniforms.uTime, uGlyphs: this.uniforms.uGlyphs, uDay: this.uniforms.uDay },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
       vertexShader: /* glsl */ `varying vec2 vUv; varying vec3 vW; void main(){ vUv = uv; vW = (modelMatrix * vec4(position,1.0)).xyz; gl_Position = projectionMatrix * viewMatrix * vec4(vW, 1.0); }`,
       fragmentShader: /* glsl */ `
-        uniform float uTime; uniform sampler2D uGlyphs; varying vec2 vUv; varying vec3 vW;
+        uniform float uTime; uniform sampler2D uGlyphs; uniform float uDay; varying vec2 vUv; varying vec3 vW;
         ${GLSL_HASH}
         void main(){
           float u = (abs(vW.x) > ${(HALF + 19).toFixed(1)} ? vW.z : vW.x);
@@ -498,7 +529,9 @@ export class CityView {
           float g = texture2D(uGlyphs, (vec2(mod(gi, 8.0), floor(gi / 8.0)) + vec2(lf.x, 1.0 - lf.y)) / 8.0).r;
           float trail = fract(yy / (40.0 + 30.0 * gpH21(vec2(cx, 4.0))) + gpH21(vec2(cx, 2.0)));
           float fade = smoothstep(120.0, 10.0, vW.y);
-          gl_FragColor = vec4(vec3(0.2, 1.0, 0.45) * g * pow(trail, 2.5) * fade * 1.5, 1.0);
+          // By day the edge-of-the-city code wall is darker green so it reads against the bright sky.
+          vec3 col = mix(vec3(0.2, 1.0, 0.45) * 1.5, vec3(0.05, 0.35, 0.12), uDay);
+          gl_FragColor = vec4(col * g * pow(trail, 2.5) * fade, 1.0);
         }`,
     });
     const span = HALF * 2 + 40;
@@ -511,6 +544,19 @@ export class CityView {
     for (const [x, z, w, d] of [[0, -HALF - 1, HALF * 2, 2], [0, HALF + 1, HALF * 2, 2], [-HALF - 1, 0, 2, HALF * 2], [HALF + 1, 0, 2, HALF * 2]]) {
       colliders.addRect(x, z, w, d, 200, "boundary");
     }
+  }
+
+  private lampPools: THREE.MeshBasicMaterial | null = null;
+
+  /** 0 = night, 0.5 = sunset, 1 = day. */
+  setDay(day: number): void {
+    this.uniforms.uDay.value = day;
+    for (const [m, night, dayC, gN, gD] of this.dayMats) {
+      m.color.copy(night).lerp(dayC, day);
+      if ((m as THREE.MeshStandardMaterial).isMeshStandardMaterial && (gN || gD)) (m as THREE.MeshStandardMaterial).emissiveIntensity = gN + (gD - gN) * day;
+    }
+    // Street-light pools only show after dark.
+    if (this.lampPools) this.lampPools.opacity = 1 - day * 0.9;
   }
 
   setUplinkBeacon(x: number, z: number, on: boolean, color = new THREE.Color(0.2, 1.6, 0.8)): void {

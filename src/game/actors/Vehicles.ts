@@ -111,7 +111,8 @@ function bodyMaterial(): THREE.MeshStandardMaterial {
   return m;
 }
 
-const PAINTS = [0x0b0f14, 0x12161c, 0x1d2b3a, 0x2a0f1a, 0x0f2a24, 0x2b2233, 0x3a2a10, 0x22262c].map((h) => new THREE.Color(h));
+// Real-world car colours (white, silver, red, blue, black, teal, orange, graphite): readable by day and under neon.
+const PAINTS = [0xd9dde2, 0x8e959e, 0xa3141f, 0x1d4f9a, 0x14171b, 0x0f6b66, 0xd86a12, 0x3a3f46, 0xe8e4da, 0x5b1f6e].map((h) => new THREE.Color(h).multiplyScalar(0.55));
 const CAB_PAINTS = [0xc79a0c, 0xb8860b, 0xd4a017].map((h) => new THREE.Color(h).multiplyScalar(0.55));
 const NEONS = [0x29ffa0, 0x29d9ff, 0xff3aa8, 0xffb229, 0xa86bff].map((h) => new THREE.Color(h));
 

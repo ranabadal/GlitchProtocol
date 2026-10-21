@@ -9,10 +9,10 @@ import { GenerationError, generateFromSeed, getTemplate, selectInstance, type Pl
 import { HACKS } from "../engine/hacks";
 import { describeTag, fallbackFeedback, fallbackNarrative, type Narrative } from "../engine/narratives";
 import { newSeed } from "../engine/rng";
-import { clearBonuses, corePoints, hackPoints, killPoints, levelForXp, SCORING, starsFor } from "../engine/scoring";
+import { clearBonuses, corePoints, hackPoints, killPoints, levelForXp, SCORING, shardPoints, starsFor } from "../engine/scoring";
 import type { HeistKey } from "../engine/templates/cityHeist";
 import { BAND_LABELS, RULESET_VERSION, type Band, type GeneratedMission, type GenInputs, type TemplateId } from "../engine/types";
-import { COUNTDOWN_MS, MAX_TRAVEL_SPEED, TRAVEL_SLACK_MS, type MissionPublic, type Pt, type RobotKind } from "../shared/mission";
+import { coreIds, COUNTDOWN_MS, courierPos, MAX_TRAVEL_SPEED, TRAVEL_SLACK_MS, type MissionPublic, type Pt, type RobotKind } from "../shared/mission";
 import { checkAchievements } from "./achievements";
 
 /** How long an unstarted briefing stays reserved before it is released. */
@@ -109,15 +109,19 @@ export interface MissionState {
   lives: number;
   downs: number;
   hack: Record<string, VaultState>;
-  unlocked: Record<string, { at: number; via: "hack" | "brute" }>;
+  unlocked: Record<string, { at: number; via: "hack" | "brute" | "titan" }>;
   picked: Record<string, number>;
   released: string[];
   kills: Record<string, number>;
   killTimes: number[];
   anchor: { x: number; z: number; at: number };
   uplink: { startedAt: number | null; doneAt: number | null };
-  points: { cores: number; hacks: number; kills: number };
+  points: { cores: number; hacks: number; kills: number; shards: number };
   mistakes: string[];
+  /** Bonus data shards collected (id -> time). */
+  shards: Record<string, number>;
+  /** Where the data truck was destroyed (its core drops there). */
+  courierDrop: Pt | null;
 }
 
 function initialState(m: MissionPublic): MissionState {
@@ -132,12 +136,23 @@ function initialState(m: MissionPublic): MissionState {
     killTimes: [],
     anchor: { x: m.start.x, z: m.start.z, at: 0 },
     uplink: { startedAt: null, doneAt: null },
-    points: { cores: 0, hacks: 0, kills: 0 },
+    points: { cores: 0, hacks: 0, kills: 0, shards: 0 },
     mistakes: [],
+    shards: {},
+    courierDrop: null,
   };
 }
 
-const runningScore = (s: MissionState) => s.points.cores + s.points.hacks + s.points.kills;
+/** Stored state, with fields added in later versions filled in for missions saved before them. */
+function loadState(raw: string | null | undefined, m: MissionPublic): MissionState {
+  const st = parseJson<MissionState>(raw, initialState(m));
+  st.shards ??= {};
+  st.courierDrop ??= null;
+  st.points.shards ??= 0;
+  return st;
+}
+
+const runningScore = (s: MissionState) => s.points.cores + s.points.hacks + s.points.kills + (s.points.shards ?? 0);
 
 // ---------------------------------------------------------------- skills & history
 
@@ -206,7 +221,7 @@ async function refresh(db: DB, inst: InstanceRow): Promise<InstanceRow> {
     await db.transaction(async () => {
       const fresh = (await getInstance(db, inst.id))!;
       if (fresh.status !== "active") return;
-      const st = parseJson<MissionState>(fresh.state, initialState(JSON.parse(fresh.mission_public)));
+      const st = loadState(fresh.state, JSON.parse(fresh.mission_public));
       await finishMission(db, fresh, st, "timeout", fresh.deadline_at!);
     }, `mission:${inst.id}`);
     return (await getInstance(db, inst.id))!;
@@ -352,7 +367,7 @@ export async function beginMission(user: UserRow, id: string): Promise<MissionVi
   if (inst.status === "briefing") {
     const t = now();
     const startAt = t + COUNTDOWN_MS;
-    const st = parseJson<MissionState>(inst.state, initialState(JSON.parse(inst.mission_public)));
+    const st = loadState(inst.state, JSON.parse(inst.mission_public));
     st.anchor.at = startAt;
     await db.prepare(`UPDATE mission_instances SET status = 'active', started_at = ?, deadline_at = ?, state = ?, version = version + 1 WHERE id = ? AND status = 'briefing'`)
       .run(startAt, startAt + inst.time_limit_sec * 1000, JSON.stringify(st), inst.id);
@@ -371,7 +386,7 @@ export async function abortMission(user: UserRow, id: string): Promise<MissionVi
     await db.transaction(async () => {
       const fresh = (await getInstance(db, inst.id))!;
       if (fresh.status !== "active") return;
-      await finishMission(db, fresh, parseJson<MissionState>(fresh.state, initialState(JSON.parse(fresh.mission_public))), "abandoned", now());
+      await finishMission(db, fresh, loadState(fresh.state, JSON.parse(fresh.mission_public)), "abandoned", now());
     }, `mission:${inst.id}`);
   }
   return await buildView(db, user, (await getInstance(db, id))!);
@@ -387,6 +402,7 @@ const eventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("down"), n: z.number().int().min(1).max(20) }),
   z.object({ type: z.literal("uplink_start") }),
   z.object({ type: z.literal("uplink_done") }),
+  z.object({ type: z.literal("shard"), id: z.string().max(8) }),
 ]);
 export type MissionEvent = z.infer<typeof eventSchema>;
 
@@ -397,6 +413,7 @@ export interface EventOutcome {
   killed?: { id: string; points: number }[];
   rejected?: { id: string; reason: string }[];
   points?: number;
+  allShards?: boolean;
 }
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -416,6 +433,7 @@ function robotIndex(m: MissionPublic): Map<string, { kind: RobotKind; release: s
   const out = new Map<string, { kind: RobotKind; release: string }>();
   for (const g of m.groups) for (const s of g.spawns) out.set(s.id, { kind: s.kind, release: g.release });
   for (const t of m.turrets) out.set(t.id, { kind: "turret", release: "start" });
+  if (m.courier) out.set(m.courier.id, { kind: "courier", release: "start" });
   return out;
 }
 
@@ -441,6 +459,7 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
   const ev = parsed.data;
   const db = getDb();
   let outcome: EventOutcome = {};
+  let after: InstanceRow | null = null;
   // One event at a time per mission: the advisory lock makes concurrent reports queue up.
   await db.transaction(async () => {
     const inst = await refresh(db, await ownedInstance(db, user, id));
@@ -453,15 +472,18 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
     if (inst.started_at !== null && t < inst.started_at - SCORING.graceMs) throw new HttpError(409, "TOO_EARLY", "Countdown abhi chal raha hai.");
     const m = JSON.parse(inst.mission_public) as MissionPublic;
     const key = JSON.parse(inst.mission_key) as HeistKey;
-    const st = parseJson<MissionState>(inst.state, initialState(m));
+    const st = loadState(inst.state, m);
     let finish: "success" | "fail" | null = null;
 
     const vault = "vault" in ev ? m.vaults.find((v) => v.id === ev.vault) : undefined;
-    if ("vault" in ev && !vault) throw new HttpError(404, "NO_SUCH_VAULT", "Ye vault is mission mein nahi hai.");
+    const truckCore = ev.type === "pickup" && !!m.courier && ev.vault === m.courier.id;
+    if ("vault" in ev && !vault && !truckCore) throw new HttpError(404, "NO_SUCH_VAULT", "Ye vault is mission mein nahi hai.");
+    const missionSec = (at: number) => Math.max(0, (at - (inst.started_at ?? at)) / 1000);
 
     switch (ev.type) {
       case "hack_start": {
         const v = vault!;
+        if (v.lock === "titan") throw new HttpError(409, "TITAN_LOCK", "Is vault ka lock TITAN ke paas hai. Pehle Titan ko giraao!");
         const vs = st.hack[v.id];
         if (st.unlocked[v.id]) throw new HttpError(409, "ALREADY_OPEN", "Ye vault pehle hi khul chuka hai.");
         if (vs.bruteUntil !== null) throw new HttpError(409, "BRUTE_FORCING", "Vault brute-force ho raha hai. Ruko aur bachao!");
@@ -485,6 +507,7 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
       }
       case "hack_answer": {
         const v = vault!;
+        if (v.lock === "titan") throw new HttpError(409, "TITAN_LOCK", "Is vault ka lock TITAN ke paas hai.");
         const vs = st.hack[v.id];
         const done = vs.results.find((r) => r.attempt === ev.attempt);
         if (done) {
@@ -515,11 +538,24 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
         break;
       }
       case "pickup": {
+        if (truckCore) {
+          const c = m.courier!;
+          if (st.picked[c.id]) { outcome = { duplicate: true }; break; }
+          if (!st.kills[c.id] || !st.courierDrop) throw new HttpError(409, "TRUCK_RUNNING", "Truck abhi chal raha hai. Pehle use todo!");
+          // The truck kept rolling while the kill report travelled; allow for that.
+          checkTravel(st, st.courierDrop, t, 40);
+          st.picked[c.id] = t;
+          st.anchor = { x: st.courierDrop.x, z: st.courierDrop.z, at: t };
+          st.points.cores += corePoints(inst.band);
+          outcome = { points: corePoints(inst.band) };
+          break;
+        }
         const v = vault!;
         if (st.picked[v.id]) { outcome = { duplicate: true }; break; }
         const vs = st.hack[v.id];
         if (!st.unlocked[v.id]) {
           if (vs.bruteUntil !== null && t >= vs.bruteUntil - SCORING.graceMs) st.unlocked[v.id] = { at: t, via: "brute" };
+          else if (v.lock === "titan") throw new HttpError(409, "VAULT_LOCKED", "Core abhi locked hai. Pehle TITAN ko giraao!");
           else throw new HttpError(409, "VAULT_LOCKED", "Core abhi locked hai. Pehle hack karo.");
         }
         checkTravel(st, v.core, t);
@@ -540,11 +576,20 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
           if (st.kills[rid]) { rejected.push({ id: rid, reason: "already destroyed" }); continue; }
           if (!st.released.includes(r.release)) { rejected.push({ id: rid, reason: "not deployed yet" }); continue; }
           if (st.killTimes.length >= SCORING.maxKillsPerSecond) { rejected.push({ id: rid, reason: "too many at once" }); continue; }
+          if (r.kind === "courier") {
+            // Only someone near the truck can destroy it (its route is known to the server).
+            const at = courierPos(m.courier!, missionSec(t));
+            try { checkTravel(st, at, t, 60); } catch { rejected.push({ id: rid, reason: "too far from the truck" }); continue; }
+            st.courierDrop = { x: +at.x.toFixed(2), z: +at.z.toFixed(2) };
+          }
           const pts = killPoints(inst.band, r.kind);
           st.kills[rid] = t;
           st.killTimes.push(t);
           st.points.kills += pts;
           killed.push({ id: rid, points: pts });
+          if (r.kind === "titan") {
+            for (const v of m.vaults) if (v.guard === rid && !st.unlocked[v.id]) st.unlocked[v.id] = { at: t, via: "titan" };
+          }
         }
         outcome = { killed, rejected, duplicate: killed.length === 0 && rejected.every((r) => r.reason === "already destroyed") };
         break;
@@ -559,7 +604,7 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
       }
       case "uplink_start": {
         if (st.uplink.startedAt !== null) { outcome = { duplicate: true }; break; }
-        const missing = m.vaults.filter((v) => !st.picked[v.id]);
+        const missing = coreIds(m).filter((id) => !st.picked[id]);
         if (missing.length) throw new HttpError(409, "CORES_MISSING", `Abhi ${missing.length} core baaki hain.`);
         checkTravel(st, m.uplink, t, m.uplink.radius);
         st.uplink.startedAt = t;
@@ -574,12 +619,28 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
         finish = "success";
         break;
       }
+      case "shard": {
+        const sh = (m.shards ?? []).find((x) => x.id === ev.id);
+        if (!sh) throw new HttpError(404, "NO_SUCH_SHARD", "Ye shard is mission mein nahi hai.");
+        if (st.shards[sh.id]) { outcome = { duplicate: true }; break; }
+        checkTravel(st, sh, t, 4);
+        st.shards[sh.id] = t;
+        st.anchor = { x: sh.x, z: sh.z, at: t };
+        const all = Object.keys(st.shards).length === (m.shards ?? []).length;
+        const pts = shardPoints(inst.band, all);
+        st.points.shards += pts;
+        outcome = { points: pts, allShards: all };
+        break;
+      }
     }
 
-    await db.prepare(`UPDATE mission_instances SET state = ?, version = version + 1 WHERE id = ?`).run(JSON.stringify(st), inst.id);
+    const state = JSON.stringify(st);
+    await db.prepare(`UPDATE mission_instances SET state = ?, version = version + 1 WHERE id = ?`).run(state, inst.id);
     if (finish) await finishMission(db, (await getInstance(db, inst.id))!, st, finish, t);
+    else after = { ...inst, state, version: inst.version + 1 };
   }, `mission:${id}`);
-  return { view: await buildView(db, user, (await getInstance(db, id))!), outcome };
+  // Most events don't change the mission's status: answer from what we just wrote instead of reading it back.
+  return { view: await buildView(db, user, after ?? (await getInstance(db, id))!), outcome };
 }
 
 /** Records the outcome exactly once. Runs inside the caller's transaction. */
@@ -611,13 +672,14 @@ async function finishMission(db: DB, inst: InstanceRow, st: MissionState, outcom
   await db.prepare(`UPDATE users SET xp = ?, level = ? WHERE id = ?`).run(xpAfter, levelAfter, user.id);
 
   const allResults = Object.values(st.hack).flatMap((v) => v.results);
-  const hacksFirstTry = m.vaults.filter((v) => st.hack[v.id].results[0]?.correct).length;
+  const hackVaults = m.vaults.filter((v) => v.lock !== "titan");
+  const hacksFirstTry = hackVaults.filter((v) => st.hack[v.id]?.results[0]?.correct).length;
   const cracked = Array.from(new Set(m.vaults.filter((v) => st.unlocked[v.id]?.via === "hack").map((v) => v.hackType)));
   const kills = Object.keys(st.kills).length;
   const mistakes = Array.from(new Set([...st.mistakes.map((t) => t.split(":").slice(0, 2).join(":")), ...(outcome === "timeout" ? ["speed"] : [])]));
   const breakdown = {
     cores: Object.keys(st.picked).length,
-    coresTotal: m.vaults.length,
+    coresTotal: coreIds(m).length,
     corePoints: st.points.cores,
     hackPoints: st.points.hacks,
     hacksFirstTry,
@@ -625,6 +687,12 @@ async function finishMission(db: DB, inst: InstanceRow, st: MissionState, outcom
     hackTypesCracked: cracked,
     kills,
     killPoints: st.points.kills,
+    shards: Object.keys(st.shards).length,
+    shardsTotal: (m.shards ?? []).length,
+    shardPoints: st.points.shards ?? 0,
+    op: m.op ?? "classic",
+    titanDown: m.vaults.some((v) => !!v.guard && !!st.kills[v.guard]),
+    truckDown: !!(m.courier && st.kills[m.courier.id]),
     clear: bonus.clear,
     time: bonus.time,
     flawless: bonus.flawless,
@@ -649,7 +717,8 @@ async function finishMission(db: DB, inst: InstanceRow, st: MissionState, outcom
   if (outcome !== "abandoned") {
     breakdown.newAchievements = await checkAchievements(db, {
       userId: user.id, scope: inst.scope, cleared, band: inst.band, bandAfter, livesLost: st.downs, kills,
-      hacksFirstTry, hackCount: m.vaults.length, hackTypesCracked: cracked, timeLeftFrac: secondsLeft / inst.time_limit_sec,
+      hacksFirstTry, hackCount: hackVaults.length, hackTypesCracked: cracked, timeLeftFrac: secondsLeft / inst.time_limit_sec,
+      titanDown: breakdown.titanDown, truckDown: breakdown.truckDown, allShards: breakdown.shardsTotal > 0 && breakdown.shards === breakdown.shardsTotal,
     });
     if (breakdown.newAchievements.length) await db.prepare(`UPDATE attempts SET score_breakdown = ? WHERE instance_id = ?`).run(JSON.stringify(breakdown), inst.id);
   }
@@ -676,6 +745,8 @@ export interface Progress {
   picked: string[];
   released: string[];
   killed: string[];
+  shards: string[];
+  courierDrop: Pt | null;
   hacks: Record<string, { attempt: number; bruteUntil: number | null; results: HackResult[]; active: { attempt: number; startedAt: number; round: unknown; type: string; timeLimitMs: number } | null }>;
   uplink: { startedAt: number | null; doneAt: number | null };
   score: number;
@@ -707,12 +778,17 @@ export interface MissionView {
 export async function buildView(db: DB, user: UserRow, inst: InstanceRow): Promise<MissionView> {
   const m = JSON.parse(inst.mission_public) as MissionPublic;
   const key = JSON.parse(inst.mission_key) as HeistKey;
-  const st = parseJson<MissionState>(inst.state, initialState(m));
+  const st = loadState(inst.state, m);
   const narrative = parseJson<Narrative>(inst.narrative, {} as Narrative);
-  const ev = inst.event_id ? (await db.prepare(`SELECT code, name FROM events WHERE id = ?`).get(inst.event_id) as { code: string; name: string } | undefined) : undefined;
+  // Only read what this mission's status needs (each read is a round trip to the database).
+  const live = inst.status === "briefing" || inst.status === "active";
+  const [ev, attempt, failStreak] = await Promise.all([
+    inst.event_id ? db.prepare(`SELECT code, name FROM events WHERE id = ?`).get<{ code: string; name: string }>(inst.event_id) : Promise.resolve(undefined),
+    live ? Promise.resolve(undefined) : db.prepare(`SELECT * FROM attempts WHERE instance_id = ?`).get<AttemptRow>(inst.id),
+    inst.scope === "personal" && inst.status === "briefing" ? recentFailStreak(db, user.id, inst.template_id) : Promise.resolve(0),
+  ]);
 
   let result: MissionResult | null = null;
-  const attempt = await db.prepare(`SELECT * FROM attempts WHERE instance_id = ?`).get(inst.id) as AttemptRow | undefined;
   if (attempt) {
     const b = parseJson<MissionResult["breakdown"]>(attempt.score_breakdown, { stars: 0, total: 0, newAchievements: [] });
     const stored = parseJson<{ headline: string; feedback: string; next_tip: string } | null>(attempt.feedback, null);
@@ -726,13 +802,14 @@ export async function buildView(db: DB, user: UserRow, inst: InstanceRow): Promi
       elapsedMs: attempt.elapsed_ms,
       feedback: stored
         ? { ...stored, source: attempt.feedback_source ?? "ai" }
-        : { ...fallbackFeedback(attempt.outcome, Number(b.cores ?? 0), Number(b.coresTotal ?? m.vaults.length), Number(b.kills ?? 0)), source: "fallback" },
+        : { ...fallbackFeedback(attempt.outcome, Number(b.cores ?? 0), Number(b.coresTotal ?? coreIds(m).length), Number(b.kills ?? 0)), source: "fallback" },
     };
   }
 
   const hacks: Progress["hacks"] = {};
   for (const v of m.vaults) {
     const vs = st.hack[v.id];
+    if (!vs) continue;
     const a = vs.started ? key.hacks[v.id][vs.started.attempt] : null;
     hacks[v.id] = {
       attempt: vs.attempt,
@@ -755,7 +832,7 @@ export async function buildView(db: DB, user: UserRow, inst: InstanceRow): Promi
     startedAt: inst.started_at,
     deadline: inst.deadline_at,
     timeLimitSec: inst.time_limit_sec,
-    tipOffered: inst.scope === "personal" && await recentFailStreak(db, user.id, inst.template_id) >= HINT_OFFER_AFTER_FAILS,
+    tipOffered: failStreak >= HINT_OFFER_AFTER_FAILS,
     narrative: { ...narrative, source: inst.narrative_source },
     mission: m,
     progress: {
@@ -765,6 +842,8 @@ export async function buildView(db: DB, user: UserRow, inst: InstanceRow): Promi
       picked: Object.keys(st.picked),
       released: st.released,
       killed: Object.keys(st.kills),
+      shards: Object.keys(st.shards),
+      courierDrop: st.courierDrop,
       hacks,
       uplink: st.uplink,
       score: runningScore(st),
@@ -796,7 +875,7 @@ export async function debriefContext(user: UserRow, instanceId: string) {
   const inst = await ownedInstance(db, user, instanceId);
   const attempt = await db.prepare(`SELECT * FROM attempts WHERE instance_id = ?`).get(inst.id) as AttemptRow | undefined;
   if (!attempt) return null;
-  const st = parseJson<MissionState>(inst.state, initialState(JSON.parse(inst.mission_public)));
+  const st = loadState(inst.state, JSON.parse(inst.mission_public));
   const failed = Object.values(st.hack).flatMap((v) => v.results.filter((r) => !r.correct));
   return {
     inst,

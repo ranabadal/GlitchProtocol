@@ -10,6 +10,70 @@ const MAX_P = 1800;
 const MAX_TRACERS = 48;
 const MAX_RINGS = 10;
 const MAX_DEBRIS = 120;
+const MAX_POPS = 24;
+
+/** Floating damage numbers and short words ("CHATAAK!"), drawn on small canvas sprites. */
+class Popups {
+  group = new THREE.Group();
+  private items: { sprite: THREE.Sprite; canvas: HTMLCanvasElement; tex: THREE.CanvasTexture; life: number; max: number; vy: number; scale: number }[] = [];
+  private next = 0;
+
+  constructor() {
+    if (typeof document === "undefined") return;
+    for (let i = 0; i < MAX_POPS; i++) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 256;
+      canvas.height = 96;
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }));
+      sprite.visible = false;
+      sprite.renderOrder = 20;
+      this.group.add(sprite);
+      this.items.push({ sprite, canvas, tex, life: 0, max: 1, vy: 0, scale: 1 });
+    }
+  }
+
+  show(p: THREE.Vector3, text: string, color: string, scale: number, life: number): void {
+    if (!this.items.length) return;
+    const it = this.items[this.next];
+    this.next = (this.next + 1) % this.items.length;
+    const g = it.canvas.getContext("2d")!;
+    g.clearRect(0, 0, 256, 96);
+    g.font = "800 58px Oxanium Variable, Oxanium, system-ui, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.lineWidth = 9;
+    g.strokeStyle = "rgba(0,0,0,0.85)";
+    g.strokeText(text, 128, 50);
+    g.fillStyle = color;
+    g.fillText(text, 128, 50);
+    it.tex.needsUpdate = true;
+    it.sprite.position.copy(p).add(new THREE.Vector3((Math.random() - 0.5) * 0.6, 0, (Math.random() - 0.5) * 0.6));
+    it.sprite.visible = true;
+    it.life = life;
+    it.max = life;
+    it.vy = 1.6;
+    it.scale = scale;
+  }
+
+  update(dt: number, camera: THREE.Camera | null): void {
+    for (const it of this.items) {
+      if (it.life <= 0) continue;
+      it.life -= dt;
+      it.sprite.position.y += it.vy * dt;
+      it.vy *= 1 - dt * 1.5;
+      const t = 1 - it.life / it.max;
+      const pop = t < 0.12 ? 0.6 + t * 4 : 1.08 - Math.min(0.08, (t - 0.12));
+      // Constant on-screen size whatever the distance (so close-up popups don't fill the screen).
+      const d = camera ? Math.max(1.5, it.sprite.position.distanceTo(camera.position)) : 10;
+      const s = it.scale * pop * 0.06 * d;
+      it.sprite.scale.set(s * 2.67, s, 1);
+      (it.sprite.material as THREE.SpriteMaterial).opacity = Math.min(1, it.life / (it.max * 0.35));
+      if (it.life <= 0) it.sprite.visible = false;
+    }
+  }
+}
 
 class ParticlePool {
   points: THREE.Points;
@@ -101,6 +165,9 @@ export class Effects {
   private debrisNext = 0;
   private flash: THREE.PointLight | null;
   private flashLife = 0;
+  private pops = new Popups();
+  /** Set by the game so popups keep a readable size at any distance. */
+  camera: THREE.Camera | null = null;
   private m4 = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private v = new THREE.Vector3();
@@ -137,6 +204,41 @@ export class Effects {
 
     this.flash = withLights ? new THREE.PointLight(0xff6a33, 0, 40, 2) : null;
     if (this.flash) this.group.add(this.flash);
+    this.group.add(this.pops.group);
+  }
+
+  /** Floating damage number. */
+  number(p: THREE.Vector3, amount: number, color = "#ffffff"): void {
+    this.pops.show(p, String(amount), color, amount >= 100 ? 1.25 : 0.9, 0.9);
+  }
+
+  /** Floating word, e.g. CHATAAK! or +60. */
+  word(p: THREE.Vector3, text: string, color = "#ffd84a", scale = 1.3): void {
+    this.pops.show(p, text, color, scale, 1.3);
+  }
+
+  /** Cartoon stars spinning off a slapped robot. */
+  stars(p: THREE.Vector3): void {
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      this.glow.spawn(p.x, p.y, p.z, Math.cos(a) * 5, 2 + Math.random() * 3, Math.sin(a) * 5, 3, 2.6, 0.6, 0.22, 0.6, { drag: 2, gravity: 4 });
+    }
+  }
+
+  /** Bright arc left by a blade slash. */
+  slash(from: THREE.Vector3, to: THREE.Vector3, color: THREE.Color): void {
+    this.tracer(from, to, color, 0.12, 0.12);
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5;
+      this.glow.spawn(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, from.z + (to.z - from.z) * t, 0, 0.5, 0, color.r * 2.5, color.g * 2.5, color.b * 2.5, 0.25, 0.18);
+    }
+  }
+
+  /** Dust kicked up by a landing, a roll or a fast turn. */
+  dust(p: THREE.Vector3, amount = 6): void {
+    for (let i = 0; i < amount; i++) {
+      this.smoke.spawn(p.x + (Math.random() - 0.5) * 0.8, 0.15, p.z + (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 2, 0.6 + Math.random(), (Math.random() - 0.5) * 2, 0.32, 0.3, 0.28, 0.45, 0.6 + Math.random() * 0.4, { grow: 2, drag: 2, gravity: -0.3 });
+    }
   }
 
   setPixelScale(s: number): void {
@@ -230,6 +332,7 @@ export class Effects {
   update(dt: number): void {
     this.glow.update(dt);
     this.smoke.update(dt);
+    this.pops.update(dt, this.camera);
     for (let i = 0; i < MAX_TRACERS; i++) {
       if (this.tracerLife[i] <= 0) continue;
       this.tracerLife[i] -= dt;

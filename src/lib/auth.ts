@@ -84,6 +84,25 @@ export async function userIdForSession(token: string | null | undefined): Promis
   return row.user_id;
 }
 
+/** Session check and the user's row in one query; refreshing last-seen doesn't hold up the request. */
+export async function sessionUser<T>(token: string | null | undefined, cols: string): Promise<T | null> {
+  if (!token || token.length > 100) return null;
+  const db = getDb();
+  const h = hashToken(token);
+  const row = await db
+    .prepare(`SELECT ${cols.split(",").map((c) => `u.${c.trim()}`).join(", ")}, s.expires_at AS s_expires_at, s.last_seen_at AS s_last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`)
+    .get<T & { s_expires_at: number; s_last_seen_at: number }>(h);
+  if (!row) return null;
+  const t = now();
+  if (row.s_expires_at <= t) {
+    await db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(h);
+    return null;
+  }
+  if (t - row.s_last_seen_at > 60_000) void db.prepare(`UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?`).run(t, h).catch(() => {});
+  const { s_expires_at: _e, s_last_seen_at: _l, ...user } = row;
+  return user as unknown as T;
+}
+
 export async function deleteSession(token: string | null | undefined): Promise<void> {
   if (!token) return;
   await getDb().prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(hashToken(token));
@@ -110,15 +129,22 @@ export function clearSessionCookie(secure: boolean): string {
  * Used for login attempts, registrations and AI calls.
  */
 export async function rateLimit(key: string, limit: number, windowMs: number): Promise<boolean> {
+  return (await rateLimitMany([{ key, limit }], windowMs))[0];
+}
+
+/** Several counters in one round trip to the database (login checks the name and the device together). */
+export async function rateLimitMany(items: { key: string; limit: number }[], windowMs: number): Promise<boolean[]> {
   const t = now();
-  const row = await getDb()
+  const values = items.map(() => "(?, 1, ?)").join(", ");
+  const rows = await getDb()
     .prepare(
-      `INSERT INTO counters (key, count, window_start) VALUES (?, 1, ?)
+      `INSERT INTO counters (key, count, window_start) VALUES ${values}
        ON CONFLICT (key) DO UPDATE SET
          count = CASE WHEN ? - counters.window_start >= ? THEN 1 ELSE counters.count + 1 END,
          window_start = CASE WHEN ? - counters.window_start >= ? THEN ? ELSE counters.window_start END
-       RETURNING count`,
+       RETURNING key, count`,
     )
-    .get<{ count: number }>(key, t, t, windowMs, t, windowMs, t);
-  return (row?.count ?? 1) <= limit;
+    .all<{ key: string; count: number }>(...items.flatMap((i) => [i.key, t]), t, windowMs, t, windowMs, t);
+  const count = new Map(rows.map((r) => [r.key, r.count]));
+  return items.map((i) => (count.get(i.key) ?? 1) <= i.limit);
 }

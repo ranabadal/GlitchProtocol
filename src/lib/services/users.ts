@@ -27,17 +27,14 @@ export async function registerUser(raw: unknown): Promise<UserRow> {
   if (!r.success) throw new HttpError(400, "INVALID_INPUT", firstIssue(r.error));
   const db = getDb();
   const key = r.data.nickname.toLowerCase();
-  if (await db.prepare(`SELECT 1 FROM users WHERE nickname_key = ?`).get(key)) {
-    throw new HttpError(409, "NICKNAME_TAKEN", "Ye naam pehle se kisi ne le liya hai. Koi aur try karo.");
-  }
   const hash = await hashPassword(r.data.password);
   const id = randomUUID();
+  // The unique index on nickname_key decides taken names; one round trip creates and returns the row.
   for (let i = 0; i < 5; i++) {
     try {
-      await db.prepare(
-        `INSERT INTO users (id, participant_id, nickname, nickname_key, password_hash, avatar_id, created_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(id, newParticipantId(), r.data.nickname, key, hash, r.data.avatarId, now(), now());
-      return (await db.prepare(`SELECT ${USER_COLS} FROM users WHERE id = ?`).get<UserRow>(id))!;
+      return (await db.prepare(
+        `INSERT INTO users (id, participant_id, nickname, nickname_key, password_hash, avatar_id, created_at, last_login_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${USER_COLS}`,
+      ).get<UserRow>(id, newParticipantId(), r.data.nickname, key, hash, r.data.avatarId, now(), now()))!;
     } catch (err) {
       if (isUniqueViolation(err, "nickname_key")) throw new HttpError(409, "NICKNAME_TAKEN", "Ye naam pehle se kisi ne le liya hai. Koi aur try karo.");
       if (!isUniqueViolation(err, "participant_id")) throw err;
@@ -48,15 +45,23 @@ export async function registerUser(raw: unknown): Promise<UserRow> {
 
 const loginSchema = z.object({ identifier: z.string().trim().min(1).max(32), password: z.string().min(1).max(128) });
 
-export async function loginUser(raw: unknown): Promise<UserRow> {
+/** Look up the account for a login name or participant ID (started early, alongside the rate-limit check). */
+export function findLoginUser(raw: unknown): Promise<UserRow | undefined> {
+  const r = loginSchema.safeParse(raw);
+  if (!r.success) return Promise.resolve(undefined);
+  const ident = r.data.identifier;
+  return getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE nickname_key = ? OR participant_id = ?`).get<UserRow>(ident.toLowerCase(), ident.toUpperCase());
+}
+
+export async function loginUser(raw: unknown, found?: Promise<UserRow | undefined>): Promise<UserRow> {
   const r = loginSchema.safeParse(raw);
   if (!r.success) throw new HttpError(400, "INVALID_INPUT", "Apna naam ya participant ID aur password daalo.");
   const db = getDb();
-  const ident = r.data.identifier;
-  const user = await db.prepare(`SELECT ${USER_COLS} FROM users WHERE nickname_key = ? OR participant_id = ?`).get<UserRow>(ident.toLowerCase(), ident.toUpperCase());
+  const user = await (found ?? findLoginUser(raw));
   const ok = await verifyPassword(r.data.password, user?.password_hash ?? (await getDummyHash()));
   if (!user || !ok) throw new HttpError(401, "BAD_CREDENTIALS", "Naam aur password match nahi hue.");
-  await db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now(), user.id);
+  // Bookkeeping only: don't make the player wait for it.
+  void db.prepare(`UPDATE users SET last_login_at = ? WHERE id = ?`).run(now(), user.id).catch(() => {});
   return user;
 }
 
@@ -146,10 +151,28 @@ export async function deleteAccount(user: UserRow, raw: unknown): Promise<void> 
 
 // ---------------------------------------------------------------- profile payload
 
+/** The player's own public profile fields (no database reads). */
+export function publicUser(user: UserRow) {
+  const level = levelForXp(user.xp);
+  const pref = (user.difficulty_pref as DifficultyPref) in PACE_RULES ? (user.difficulty_pref as DifficultyPref) : "balanced";
+  return {
+    id: user.id,
+    participantId: user.participant_id,
+    nickname: user.nickname,
+    avatarId: isAvatarId(user.avatar_id) ? user.avatar_id : AVATAR_IDS[0],
+    photoUrl: photoUrl(user),
+    showPhoto: user.show_photo === 1,
+    difficultyPref: pref,
+    xp: user.xp,
+    level,
+    levelFloorXp: xpForLevel(level),
+    nextLevelXp: xpForLevel(level + 1),
+  };
+}
+
 export async function mePayload(user: UserRow) {
   const db = getDb();
-  const level = levelForXp(user.xp);
-  const [s, last, unlocked, open, recent, stats, breakdowns, a] = await Promise.all([
+  const [s, last, unlocked, open, recent, stats, a] = await Promise.all([
     getSkill(db, user.id, "city-heist", user.level),
     db.prepare(`SELECT outcome FROM attempts WHERE user_id = ? AND scope = 'personal' ORDER BY created_at DESC, seq DESC LIMIT ?`).all<{ outcome: string }>(user.id, HINT_OFFER_AFTER_FAILS),
     db.prepare(`SELECT code, unlocked_at FROM achievements WHERE user_id = ? ORDER BY unlocked_at`).all<{ code: string; unlocked_at: number }>(user.id),
@@ -158,30 +181,17 @@ export async function mePayload(user: UserRow) {
       .prepare(`SELECT instance_id, band, outcome, score, scope, score_breakdown, created_at FROM attempts WHERE user_id = ? ORDER BY created_at DESC, seq DESC LIMIT 8`)
       .all<{ instance_id: string; band: number; outcome: string; score: number; scope: string; score_breakdown: string; created_at: number }>(user.id),
     db
-      .prepare(`SELECT COUNT(*) AS missions, COUNT(*) FILTER (WHERE outcome = 'success') AS wins, MAX(score) AS best, SUM(CASE WHEN scope = 'personal' THEN score ELSE 0 END) AS total FROM attempts WHERE user_id = ?`)
-      .get<{ missions: number; wins: number | null; best: number | null; total: number | null }>(user.id),
-    db.prepare(`SELECT score_breakdown FROM attempts WHERE user_id = ?`).all<{ score_breakdown: string }>(user.id),
+      .prepare(`SELECT COUNT(*) AS missions, COUNT(*) FILTER (WHERE outcome = 'success') AS wins, MAX(score) AS best,
+                  SUM(CASE WHEN scope = 'personal' THEN score ELSE 0 END) AS total,
+                  SUM(COALESCE((score_breakdown::jsonb ->> 'kills')::int, 0)) AS kills
+                FROM attempts WHERE user_id = ?`)
+      .get<{ missions: number; wins: number | null; best: number | null; total: number | null; kills: number | null }>(user.id),
     aiStatus(),
   ]);
-  const kills = breakdowns.reduce((n, r) => {
-    try { return n + Number(JSON.parse(r.score_breakdown).kills ?? 0); } catch { return n; }
-  }, 0);
-  const pref = (user.difficulty_pref as DifficultyPref) in PACE_RULES ? (user.difficulty_pref as DifficultyPref) : "balanced";
+  const kills = stats?.kills ?? 0;
 
   return {
-    user: {
-      id: user.id,
-      participantId: user.participant_id,
-      nickname: user.nickname,
-      avatarId: isAvatarId(user.avatar_id) ? user.avatar_id : AVATAR_IDS[0],
-      photoUrl: photoUrl(user),
-      showPhoto: user.show_photo === 1,
-      difficultyPref: pref,
-      xp: user.xp,
-      level,
-      levelFloorXp: xpForLevel(level),
-      nextLevelXp: xpForLevel(level + 1),
-    },
+    user: publicUser(user),
     skill: {
       band: s.band,
       bandLabel: BAND_LABELS[s.band],

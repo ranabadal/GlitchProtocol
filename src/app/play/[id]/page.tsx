@@ -11,7 +11,9 @@ import { BigMap, Minimap } from "@/components/game/Minimap";
 import { Results } from "@/components/game/Results";
 import type { Game } from "@/game/Game";
 import { BridgeError, type HackRequest, type HackVerdict, type HudState, type MissionBridge, type QualityLevel, type Sync } from "@/game/types";
+import type { GameSettings, LightMode } from "@/game/Settings";
 import { api, ApiError, getMe, type Me, type Mission } from "@/lib/client/api";
+import { coreIds, OP_INFO } from "@/lib/shared/mission";
 import "../play.css";
 
 export default function PlayPage() {
@@ -52,6 +54,7 @@ function PlayScreen({ id }: { id: string }) {
   const [nextBusy, setNextBusy] = useState(false);
   const [muted, setMuted] = useState(false);
   const [quality, setQuality] = useState<QualityLevel>("medium");
+  const [settings, setSettings] = useState<GameSettings | null>(null);
   const [aiStory, setAiStory] = useState<"idle" | "loading" | "done">("idle");
 
   const setPhase = (p: Phase) => { phaseRef.current = p; setPhaseState(p); };
@@ -99,6 +102,7 @@ function PlayScreen({ id }: { id: string }) {
     down: async (n) => sync(await post({ type: "down", n })),
     uplinkStart: async () => sync(await post({ type: "uplink_start" })),
     uplinkDone: async () => sync(await post({ type: "uplink_done" })),
+    shard: async (sid) => { const m = await post({ type: "shard", id: sid }); return { ...sync(m), points: m.outcome?.points ?? 0, allShards: !!m.outcome?.allShards }; },
   }), [post]);
 
   // ------------------------------------------------------------ load
@@ -171,6 +175,7 @@ function PlayScreen({ id }: { id: string }) {
     setMuted(g.sound.muted);
     await g.ready;
     setQuality(g.quality);
+    setSettings(g.settings);
     setReady(true);
   }
 
@@ -339,8 +344,24 @@ function PlayScreen({ id }: { id: string }) {
               ))}
             </div>
             <div className="row wrap" style={{ gap: 8, marginTop: 10 }}>
+              <span className="muted">Roshni:</span>
+              {([["day", "☀ Din"], ["dusk", "🌇 Shaam"], ["night", "🌙 Raat"]] as [LightMode, string][]).map(([k, label]) => (
+                <button key={k} className={`btn small ${settings?.light === k ? "primary" : ""}`} onClick={() => { gameRef.current?.updateSettings({ light: k }); setSettings(gameRef.current?.settings ?? null); }}>{label}</button>
+              ))}
+            </div>
+            <div className="row wrap" style={{ gap: 8, marginTop: 10 }}>
               <span className="muted">Sound:</span>
               <button className="btn small cyan" onClick={() => { const m = !muted; gameRef.current?.setMuted(m); setMuted(m); }}>{muted ? "Off" : "On"}</button>
+              <span className="muted" style={{ marginLeft: 8 }}>Awaazein:</span>
+              <button className="btn small cyan" onClick={() => { gameRef.current?.updateSettings({ voices: !settings?.voices }); setSettings(gameRef.current?.settings ?? null); }}>{settings?.voices ? "On" : "Off"}</button>
+            </div>
+            <div className="row wrap" style={{ gap: 8, marginTop: 10, alignItems: "center" }}>
+              <span className="muted">Mouse speed:</span>
+              <input type="range" min={0.4} max={2.2} step={0.1} value={settings?.sensitivity ?? 1} style={{ width: 160 }}
+                onChange={(e) => { gameRef.current?.updateSettings({ sensitivity: Number(e.target.value) }); setSettings(gameRef.current?.settings ?? null); }} />
+              <b className="mono">{(settings?.sensitivity ?? 1).toFixed(1)}x</b>
+              <button className={`btn small ${settings?.invertY ? "primary" : ""}`} onClick={() => { gameRef.current?.updateSettings({ invertY: !settings?.invertY }); setSettings(gameRef.current?.settings ?? null); }}>Invert Y</button>
+              <button className={`btn small ${settings?.toggleRun ? "primary" : ""}`} title="On: Shift ek baar dabao to daudna shuru/band" onClick={() => { gameRef.current?.updateSettings({ toggleRun: !settings?.toggleRun }); setSettings(gameRef.current?.settings ?? null); }}>Shift toggle-run</button>
             </div>
             <Controls />
             <button className="btn red" style={{ marginTop: 16 }} onClick={quit}>Mission chhodo</button>
@@ -375,7 +396,19 @@ function MapPreview({ mission }: { mission: Mission }) {
     const put = (kind: Parameters<typeof drawMarker>[1]["kind"], x: number, z: number) => { const [px, pz] = toMap(x, z); drawMarker(g, { kind, x, z }, px * k, pz * k, 9 * dpr, kind === "vault"); };
     for (const b of m.barricades) put("barricade", b.x, b.z);
     for (const f of m.fences) put("fence", f.x, f.z);
-    for (const v of m.vaults) put("vault", v.door.x, v.door.z);
+    for (const s of m.shards ?? []) put("shard", s.x, s.z);
+    if (m.courier) {
+      g.save();
+      g.strokeStyle = "rgba(255, 79, 216, 0.85)";
+      g.lineWidth = 3 * dpr;
+      g.setLineDash([6 * dpr, 5 * dpr]);
+      g.beginPath();
+      m.courier.loop.forEach((p, i) => { const [px, pz] = toMap(p.x, p.z); if (i) g.lineTo(px * k, pz * k); else g.moveTo(px * k, pz * k); });
+      g.closePath();
+      g.stroke();
+      g.restore();
+    }
+    for (const v of m.vaults) put(v.lock === "titan" ? "titan" : "vault", v.door.x, v.door.z);
     put("uplink", m.uplink.x, m.uplink.z);
     put("start", m.start.x, m.start.z);
   }, [mission]);
@@ -393,6 +426,7 @@ function Briefing({ mission, me, ready, starting, aiStory, onStart }: { mission:
       <div className="briefing panel rise">
         <div className="row wrap" style={{ gap: 10 }}>
           <span className="chip red">MISSION BRIEFING</span>
+          <span className="chip pink">{OP_INFO[m.op ?? "classic"].title}</span>
           <span className="chip">{mission.bandLabel} · Threat {mission.band}</span>
           {mission.event && <span className="chip cyan">EVENT {mission.event.code}</span>}
           {aiStory === "loading" && <span className="chip amber" style={{ animation: "pulse 1.2s infinite" }}>AI story aa rahi hai...</span>}
@@ -403,10 +437,11 @@ function Briefing({ mission, me, ready, starting, aiStory, onStart }: { mission:
           <div className="stack" style={{ gap: 12 }}>
             <p style={{ fontSize: 19, margin: 0 }}>{n.briefing}</p>
             <p className="null-quote">NULL: “{n.threat}”</p>
+            <div className="ok-box" style={{ borderColor: "rgba(255,79,216,0.5)" }}><b>{OP_INFO[m.op ?? "classic"].title}:</b> {OP_INFO[m.op ?? "classic"].blurb}{(m.shards?.length ?? 0) > 0 && ` Bonus: shehar mein ${m.shards!.length} sunehre DATA SHARDS chhupe hain.`}</div>
             {n.personal && <div className="ok-box">{n.personal}</div>}
             {touchOnly && <div className="error-box">Ye game keyboard + mouse ke liye bana hai. Laptop ya PC pe khelo.</div>}
             <div className="grid" style={{ gridTemplateColumns: "repeat(4, 1fr)", gap: 10, textAlign: "center" }}>
-              {[["Data cores", m.vaults.length], ["Time", `${Math.floor(m.timeLimitSec / 60)}:${String(m.timeLimitSec % 60).padStart(2, "0")}`], ["Lives", m.lives], ["Upload", `${m.uploadSec}s`]].map(([k, v]) => (
+              {[["Data cores", coreIds(m).length], ["Time", `${Math.floor(m.timeLimitSec / 60)}:${String(m.timeLimitSec % 60).padStart(2, "0")}`], ["Lives", m.lives], ["Upload", `${m.uploadSec}s`]].map(([k, v]) => (
                 <div key={k as string} className="stat"><b>{v}</b><span>{k}</span></div>
               ))}
             </div>
@@ -422,6 +457,9 @@ function Briefing({ mission, me, ready, starting, aiStory, onStart }: { mission:
             <MapPreview mission={mission} />
             <div className="row wrap muted" style={{ gap: 10, fontSize: 13, justifyContent: "center" }}>
               <span style={{ color: "#29d9ff" }}>◆ Vault</span><span style={{ color: "#3cff9a" }}>▲ Uplink</span><span style={{ color: "#a86bff" }}>■ Start</span><span style={{ color: "#ff4d4d" }}>✕ Barricade</span>
+              {m.vaults.some((v) => v.lock === "titan") && <span style={{ color: "#ff4fd8" }}>♛ Titan</span>}
+              {m.courier && <span style={{ color: "#ff4fd8" }}>┅ Truck ka rasta</span>}
+              {(m.shards?.length ?? 0) > 0 && <span style={{ color: "#ffd84a" }}>♦ Shard</span>}
             </div>
           </div>
         </div>
@@ -437,9 +475,10 @@ function Briefing({ mission, me, ready, starting, aiStory, onStart }: { mission:
 
 function Controls({ compact = false }: { compact?: boolean }) {
   const rows: [string, string][] = [
-    ["W A S D", "chalo / gaadi chalao"], ["Mouse", "nishana / camera"], ["Left click", "blaster fire"], ["Right click", "aim (zoom)"],
-    ["Shift", "daudo / nitro"], ["Space", "jump / handbrake"], ["F", "gaadi mein baitho / utro"], ["E", "terminal hack"],
-    ["Q", "EMP blast"], ["M / Tab", "bada map"], ["H", "horn"], ["Esc", "pause"],
+    ["W A S D", "chalo / gaadi chalao"], ["Mouse", "nishana / camera"], ["Left click", "fire / vaar"], ["Right click", "aim (zoom)"],
+    ["Shift", "daudo / nitro / heli neeche"], ["Space", "jump / handbrake / heli upar"], ["C", "dodge roll"], ["V", "thappad (slap)!"],
+    ["1 2 3 4", "Blaster · Scatter · Bomb · Blade"], ["Mouse wheel", "weapon badlo"], ["F", "gaadi / helicopter / metro"], ["E", "terminal hack"],
+    ["Q", "EMP blast"], ["M / Tab", "bada map"], ["H", "horn"], ["Esc", "pause + settings"],
   ];
   return (
     <div className="controls" style={{ gridTemplateColumns: compact ? "repeat(3, minmax(0, 1fr))" : "repeat(2, minmax(0, 1fr))" }}>

@@ -1,9 +1,12 @@
 import * as THREE from "three";
 import { accessNodes, getCity, shortestPath } from "@/lib/shared/city";
-import { type MissionPublic, type Pt, type Spawn, type VaultPublic } from "@/lib/shared/mission";
+import { coreIds, OP_INFO, type MissionPublic, type Pt, type Spawn, type VaultPublic } from "@/lib/shared/mission";
 import type { Crowd } from "../actors/Crowd";
 import type { Player } from "../actors/Player";
-import type { Robot, Robots } from "../actors/Robots";
+import type { HitBy, Robot, Robots } from "../actors/Robots";
+import type { Heli, Metro } from "../actors/Rides";
+import type { QuipKind } from "../audio/Voice";
+import { DataTruck, Shards } from "./Extras";
 import type { Vehicles } from "../actors/Vehicles";
 import type { Colliders } from "../Colliders";
 import type { Input } from "../Input";
@@ -50,7 +53,10 @@ export interface DirectorOptions {
   colliders: Colliders;
   voice?: typeof DEFAULT_VOICE;
   deadline: number | null;
+  /** Server time the mission clock started (for the data truck's position). */
+  startAt?: number | null;
   firstTime: boolean;
+  rides?: { helis: Heli[]; metro: Metro | null };
   onFinished: (outcome: "won" | "lost") => void;
   onError: (msg: string) => void;
 }
@@ -78,6 +84,15 @@ export class Director {
   objectiveDist: number | null = null;
   prompt: string | null = null;
   inLobby = false;
+  truck: DataTruck | null = null;
+  shards: Shards | null = null;
+  /** Kills in quick succession, for the combo counter. */
+  combo = { n: 0, at: -99 };
+  heroLine: { text: string; at: number } | null = null;
+  private recentKills: number[] = [];
+  private startAt: number | null = null;
+  private truckBusy = false;
+  private killNow = false;
   private busy = false;
   private pendingKills: string[] = [];
   private killTimer = 0;
@@ -108,6 +123,7 @@ export class Director {
     this.downs = o.progress?.downs ?? 0;
     this.score = o.progress?.score ?? 0;
     this.checkpoint = { x: m.start.x, z: m.start.z, heading: m.start.heading };
+    this.startAt = o.startAt ?? null;
 
     for (const v of m.vaults) {
       const lobby = new VaultLobby(v, o.colliders, w.uTime);
@@ -140,6 +156,17 @@ export class Director {
     kits.push({ x: m.uplink.x + 20, z: m.uplink.z + 20 }, { x: m.uplink.x - 20, z: m.uplink.z - 20 });
     this.medkits = new Medkits(kits);
     this.group.add(this.medkits.group);
+    // Data truck and bonus shards.
+    if (m.courier) {
+      this.truck = new DataTruck(m.courier, w, o.robots, m.band);
+      this.truck.onDestroyed = () => this.onTruckDestroyed();
+      this.group.add(this.truck.group);
+      o.player.extraTargets.push(this.truck);
+    }
+    if (m.shards?.length) {
+      this.shards = new Shards(m.shards, new Set(o.progress?.shards ?? []));
+      this.group.add(this.shards.group);
+    }
     w.scene.add(this.group);
 
     for (const b of m.barricades) o.vehicles.blocked.add(b.edge);
@@ -156,9 +183,15 @@ export class Director {
         const h = pr.hacks[vr.v.id];
         if (h) { vr.bruteUntil = h.bruteUntil; vr.attemptsLeft = 3 - h.attempt; }
         if (pr.picked.includes(vr.v.id)) { vr.state = "taken"; this.carried.push(vr.v.id); }
+        else if (vr.v.lock === "titan" && vr.v.guard && pr.killed.includes(vr.v.guard)) vr.state = "open";
         else if (pr.unlocked.includes(vr.v.id)) vr.state = "open";
         else if (vr.bruteUntil) vr.state = "brute";
         vr.lobby.setState(vr.state);
+      }
+      if (this.truck && m.courier && pr.killed.includes(m.courier.id)) {
+        const drop = pr.courierDrop ?? { x: this.truck.pos.x, z: this.truck.pos.z };
+        if (pr.picked.includes(m.courier.id)) { this.truck.collected = true; this.carried.push(m.courier.id); }
+        this.truck.dropAt(drop.x, drop.z);
       }
       if (pr.uplink.startedAt) {
         this.uplinkStarted = true;
@@ -174,6 +207,26 @@ export class Director {
 
     o.robots.onKilled = (r, by) => this.onRobotKilled(r, by);
     o.player.onDeath = () => this.onPlayerDown();
+    o.player.onRide = (kind) => { if (kind !== "car") this.quip(kind, 1); };
+  }
+
+  /** Total cores this mission needs (vaults plus the data truck). */
+  get coresTotal(): number {
+    return coreIds(this.m).length;
+  }
+
+  setStart(startAt: number | null): void {
+    this.startAt = startAt;
+  }
+
+  /** Seconds since the mission clock started (server time). */
+  missionSec(): number {
+    return this.startAt ? Math.max(0, (this.serverNow() - this.startAt) / 1000) : 0;
+  }
+
+  private quip(kind: QuipKind, chance = 0.45, force = false): void {
+    const text = this.o.world.sound.voice.hero(kind, chance, force);
+    if (text) this.heroLine = { text, at: performance.now() };
   }
 
   private outside(v: VaultPublic): { x: number; z: number; heading: number } {
@@ -210,6 +263,7 @@ export class Director {
     this.lastVoiceAt = w.time;
     const text = Array.isArray(lines) ? lines[Math.floor(Math.random() * lines.length)] : lines;
     this.nullLine = { text, at: performance.now() };
+    w.sound.voice.nullSay(text);
   }
 
   // ------------------------------------------------------------ robots
@@ -225,7 +279,7 @@ export class Director {
         if (skip.has(s.id)) return;
         const spawn = () => {
           if (this.phase === "won" || this.phase === "lost") return;
-          this.o.robots.spawn(s, { materialize, alert: alarm, group: g.id });
+          this.o.robots.spawn(s, { materialize, alert: alarm, group: g.id, hp: s.kind === "titan" ? 650 + this.m.band * 110 : undefined });
         };
         if (materialize) setTimeout(spawn, i * 260);
         else spawn();
@@ -234,17 +288,98 @@ export class Director {
     if (key !== "start" && materialize) this.o.world.noise(p.pos.x, p.pos.z, 60, "alarm");
   }
 
-  private onRobotKilled(r: Robot, by: string): void {
+  private onRobotKilled(r: Robot, by: HitBy): void {
     if (this.phase !== "play" && this.phase !== "intro") return;
+    const w = this.o.world;
     this.pendingKills.push(r.id);
     if (by !== "emp") this.o.crowd.cheerKill(r.pos.x, r.pos.z);
-    if (Math.random() < 0.35) this.say(this.voice.onKill);
+    // Combo counter and the hero's quips.
+    const t = w.time;
+    this.combo = t - this.combo.at < 3 ? { n: this.combo.n + 1, at: t } : { n: 1, at: t };
+    this.recentKills = [...this.recentKills.filter((x) => t - x < 1.6), t];
+    w.sound.killConfirm(this.combo.n);
+    if (r.kind === "titan") {
+      this.killNow = true;
+      const vr = this.vaults.find((x) => x.v.guard === r.id);
+      if (vr && vr.state === "locked") { vr.state = "open"; vr.lobby.setState("open"); }
+      this.notice("TITAN GIRA! Vault ka lock toot gaya. Core uthao!", "good");
+      w.fx.word(r.pos.clone().setY(7), "TITAN DOWN!", "#ff6ad8", 2);
+      this.quip("titan", 1, true);
+      this.say(["Mera Titan! Yeh namumkin hai!", "Titan... offline?!"], true);
+      return;
+    }
+    if (this.recentKills.length >= 2) this.quip("multi", 0.9);
+    else if (by === "slap") this.quip("slap", 0.8);
+    else if (by === "blade") this.quip("blade", 0.5);
+    else if (by === "bomb") this.quip("bomb", 0.6);
+    else if (by === "scatter") this.quip("scatter", 0.4);
+    else if (by === "car") this.quip("car", 0.4);
+    else if (by === "gun") this.quip("gun", 0.35);
+    if (Math.random() < 0.3) this.say(this.voice.onKill);
+  }
+
+  private onTruckDestroyed(): void {
+    const c = this.m.courier;
+    if (!c || (this.phase !== "play" && this.phase !== "intro")) return;
+    this.pendingKills.push(c.id);
+    this.killNow = true;
+    this.notice(`${c.name} tabaah! Uska DATA CORE utha lo!`, "good");
+    this.quip("truck", 1, true);
+    this.say(["Mera truck! Mera data!", "Nahi! Woh core mera hai!"], true);
+  }
+
+  private async pickupTruckCore(): Promise<void> {
+    const { world: w, bridge, player } = this.o;
+    const t = this.truck!;
+    if (this.truckBusy || t.collected) return;
+    this.truckBusy = true;
+    try {
+      const r = await bridge.pickup(this.m.courier!.id);
+      this.applySync(r);
+      t.collect();
+      this.carried.push(this.m.courier!.id);
+      this.syncOrbit();
+      w.fx.dataBurst(player.pos.clone().setY(1.4));
+      w.sound.pickup();
+      const left = this.coresTotal - this.carried.length;
+      this.notice(`TRUCK KA CORE mila! +${r.points}`, "good");
+      this.notice(left ? `${left} core aur baaki.` : "Saare cores mil gaye! Ab uplink tower pe jao!", "info");
+    } catch (err) {
+      // Usually the kill report hasn't landed yet: try again in a moment.
+      if (!(err instanceof BridgeError && err.code === "TRUCK_RUNNING")) this.notice(err instanceof Error ? err.message : "Core uthane mein dikkat.", "bad");
+      this.killNow = true;
+      await new Promise((res) => setTimeout(res, 1200));
+    } finally {
+      this.truckBusy = false;
+    }
+  }
+
+  private async collectShard(it: NonNullable<ReturnType<Shards["near"]>>): Promise<void> {
+    const w = this.o.world;
+    it.busy = true;
+    try {
+      const r = await this.o.bridge.shard(it.s.id);
+      this.applySync(r);
+      it.taken = true;
+      it.mesh.visible = false;
+      w.sound.shard();
+      w.fx.dataBurst(new THREE.Vector3(it.s.x, 1.3, it.s.z));
+      const n = this.shards!.count;
+      this.notice(r.allShards ? `SAARE SHARDS! Bonus +${r.points}` : `DATA SHARD +${r.points} (${n.got}/${n.total})`, "good");
+      if (r.allShards) this.quip("shard", 1, true);
+    } catch (err) {
+      this.notice(err instanceof Error ? err.message : "Shard nahi mila.", "bad");
+      await new Promise((res) => setTimeout(res, 2000));
+    } finally {
+      it.busy = false;
+    }
   }
 
   private flushKills(dt: number): void {
     this.killTimer -= dt;
     this.killBackoff = Math.max(0, this.killBackoff - dt);
-    if (!this.pendingKills.length || this.killTimer > 0 || this.killBackoff > 0) return;
+    if (!this.pendingKills.length || this.killBackoff > 0 || (this.killTimer > 0 && !this.killNow)) return;
+    this.killNow = false;
     this.killTimer = 0.7;
     const batch = this.pendingKills.splice(0, 10);
     this.o.bridge.kills(batch).then((r) => {
@@ -349,7 +484,7 @@ export class Director {
       w.fx.dataBurst(player.pos.clone().setY(1.4));
       w.sound.pickup();
       this.checkpoint = this.outside(vr.v);
-      const left = this.m.vaults.length - this.carried.length;
+      const left = this.coresTotal - this.carried.length;
       this.notice(`DATA CORE mila! +${r.points}`, "good");
       this.notice(left ? `${left} core aur baaki.` : "Saare cores mil gaye! Ab uplink tower pe jao!", "info");
       this.say(this.voice.onCore);
@@ -467,13 +602,15 @@ export class Director {
   begin(): void {
     if (this.phase !== "intro") return;
     this.phase = "play";
+    const op = OP_INFO[this.m.op ?? "classic"];
     if (this.o.firstTime) {
-      this.notice("WASD se chalo, mouse se nishana, left click se fire!", "info");
-      setTimeout(() => this.notice("Gaadi ke paas F dabao. Minimap ki peeli line follow karo.", "info"), 3500);
+      this.notice("WASD se chalo, Shift se daudo, mouse se nishana, left click se fire!", "info");
+      setTimeout(() => this.notice("1-4 se weapon badlo · V = thappad · C = roll · F = gaadi/heli/metro", "info"), 3500);
       setTimeout(() => this.notice("Q = EMP blast. M = bada map.", "info"), 7000);
     } else {
-      this.notice("Mission shuru! Peeli line follow karo.", "info");
+      this.notice(`${op.title.toUpperCase()}! ${op.blurb}`, "info");
     }
+    if (this.m.courier) setTimeout(() => this.notice(`${this.m.courier!.name} shehar mein ghoom raha hai. Map pe magenta truck dekho!`, "info"), 9000);
   }
 
   // ------------------------------------------------------------ frame
@@ -484,6 +621,8 @@ export class Director {
     for (const vr of this.vaults) vr.lobby.update(w.time, dt);
     this.fences.update(w.time, dt);
     this.medkits.update(w.time);
+    this.shards?.update(w.time);
+    this.truck?.update(dt, this.phase === "play" ? this.missionSec() : this.phase === "intro" ? 0 : this.missionSec(), this.phase === "play" ? player : null);
 
     // Orbiting cores.
     this.orbit.forEach((m, i) => {
@@ -533,8 +672,23 @@ export class Director {
       w.sound.pickup();
     }
 
+    // Ramming the data truck, grabbing its core, bonus shards.
+    const truck = this.truck;
+    if (truck && player.car && player.car.driver === "player") {
+      const dmg = truck.ram(player.car.pos, player.car.vel);
+      if (dmg > 0) { player.car.takeDamage(dmg, truck.pos); player.car.vel.multiplyScalar(0.4); }
+    }
+    if (truck && !truck.alive && truck.dropped && !truck.collected && player.alive && !player.heli && !player.train) {
+      if (Math.hypot(player.pos.x - truck.dropped.x, player.pos.z - truck.dropped.z) < (player.car ? 5 : 3)) void this.pickupTruckCore();
+    }
+    if (this.shards && player.alive && !player.train && player.pos.y < 3) {
+      const it = this.shards.near(player.pos, player.car ? 3.6 : 2.2);
+      if (it) void this.collectShard(it);
+    }
+
     // Repair kits.
-    if (player.alive && !player.car && player.health < 100 && this.medkits.tryPickup(player.pos, w.time)) {
+    const onGround = player.alive && !player.car && !player.heli && !player.train;
+    if (onGround && player.health < 100 && this.medkits.tryPickup(player.pos, w.time)) {
       player.health = Math.min(100, player.health + 45);
       w.sound.pickup();
       this.notice("Repair kit: +45 health", "good");
@@ -542,7 +696,7 @@ export class Director {
 
     this.prompt = null;
     this.inLobby = false;
-    const foot = player.alive && !player.car;
+    const foot = player.alive && !player.car && !player.heli && !player.train;
     for (const vr of this.vaults) {
       if (vr.state === "brute" && vr.bruteUntil) {
         const total = this.m.bruteForceSec * 1000;
@@ -555,6 +709,10 @@ export class Director {
       if (!foot || this.busy) continue;
       const dT = Math.hypot(player.pos.x - vr.v.terminal.x, player.pos.z - vr.v.terminal.z);
       const dC = Math.hypot(player.pos.x - vr.v.core.x, player.pos.z - vr.v.core.z);
+      if (vr.v.lock === "titan" && vr.state === "locked") {
+        if (dT < 3 || dC < 4) this.prompt = "Is vault ka lock TITAN ke paas hai: pehle use giraao!";
+        continue;
+      }
       if (vr.state === "locked" && dT < 2.6) {
         this.prompt = `E · ${HACK_NAMES[vr.v.hackType]} hack karo`;
         if (controls && input.hit("KeyE")) void this.startHack(vr);
@@ -567,7 +725,8 @@ export class Director {
       }
     }
 
-    // Car prompts.
+    // Ride prompts (helicopter, metro), then cars.
+    if (!this.prompt && player.ridePrompt) this.prompt = player.ridePrompt;
     if (!this.prompt && foot) {
       const car = this.o.vehicles.nearestEnterable(player.pos, 3.0);
       if (car) this.prompt = `F · ${car.v.name} chalao`;
@@ -576,8 +735,8 @@ export class Director {
     }
 
     // Uplink.
-    const all = this.carried.length >= this.m.vaults.length;
-    const inside = Math.hypot(player.pos.x - this.m.uplink.x, player.pos.z - this.m.uplink.z) < this.m.uplink.radius;
+    const all = this.carried.length >= this.coresTotal;
+    const inside = Math.hypot(player.pos.x - this.m.uplink.x, player.pos.z - this.m.uplink.z) < this.m.uplink.radius && !player.train && player.pos.y < 6;
     if (all && !this.uplinkStarted && inside && player.alive && w.time >= this.uplinkRetryAt) void this.uplinkStart();
     if (this.uplinkStarted && player.alive && inside) {
       this.uplinkProgress = Math.min(this.m.uploadSec, this.uplinkProgress + dt);
@@ -595,12 +754,22 @@ export class Director {
       const open = this.vaults.filter((x) => x.state !== "taken");
       let best: VaultRt | null = null, bd = Infinity;
       for (const vr of open) { const d = Math.hypot(vr.v.door.x - player.pos.x, vr.v.door.z - player.pos.z); if (d < bd) { bd = d; best = vr; } }
-      if (best) {
+      // The data truck competes for "nearest objective" too.
+      const tk = truck && !truck.collected ? (truck.alive ? truck.pos : truck.dropped) : null;
+      const td = tk ? Math.hypot(tk.x - player.pos.x, tk.z - player.pos.z) : Infinity;
+      if (tk && (td < bd || !best)) {
+        target = { x: tk.x, z: tk.z };
+        this.objective = truck!.alive ? `${this.m.courier!.name} ka peecha karo aur use todo!` : "Truck ka core uthao!";
+      } else if (best) {
         const inThis = this.inLobby && bd < 30;
-        target = inThis ? (best.state === "locked" ? best.v.terminal : best.v.core) : best.v.door;
-        this.objective = best.state === "locked"
-          ? (inThis ? `Terminal pe E dabao: ${HACK_NAMES[best.v.hackType]}` : `Vault tak pahuncho: ${best.v.name}`)
-          : best.state === "brute" ? "Brute-force chal raha hai! Robots se bacho." : `Core uthao: ${best.v.name}`;
+        const titan = best.v.lock === "titan" && best.state === "locked";
+        const boss = titan ? this.o.robots.byId.get(best.v.guard!) : undefined;
+        target = titan ? (boss?.alive ? { x: boss.pos.x, z: boss.pos.z } : best.v.door) : inThis ? (best.state === "locked" ? best.v.terminal : best.v.core) : best.v.door;
+        this.objective = titan
+          ? `TITAN ko giraao: ${best.v.name} ke bahar`
+          : best.state === "locked"
+            ? (inThis ? `Terminal pe E dabao: ${HACK_NAMES[best.v.hackType]}` : `Vault tak pahuncho: ${best.v.name}`)
+            : best.state === "brute" ? "Brute-force chal raha hai! Robots se bacho." : `Core uthao: ${best.v.name}`;
       }
     } else if (this.uplinkStarted) {
       target = this.m.uplink;
@@ -636,17 +805,41 @@ export class Director {
 
   markers(): MapMarker[] {
     const out: MapMarker[] = [];
-    for (const vr of this.vaults) out.push({ kind: vr.state === "taken" ? "vault-done" : "vault", x: vr.v.door.x, z: vr.v.door.z, label: vr.v.name });
+    for (const vr of this.vaults) out.push({ kind: vr.state === "taken" ? "vault-done" : vr.v.lock === "titan" && vr.state === "locked" ? "titan" : "vault", x: vr.v.door.x, z: vr.v.door.z, label: vr.v.name });
+    const tk = this.truck;
+    if (tk && !tk.collected) out.push({ kind: tk.alive ? "truck" : "core", x: tk.alive ? tk.pos.x : tk.dropped!.x, z: tk.alive ? tk.pos.z : tk.dropped!.z, label: this.m.courier!.name });
+    for (const it of this.shards?.items ?? []) if (!it.taken) out.push({ kind: "shard", x: it.s.x, z: it.s.z });
+    for (const h of this.o.rides?.helis ?? []) if (!h.occupied) out.push({ kind: "heli", x: h.pos.x, z: h.pos.z, label: "Helicopter" });
+    for (const st of this.o.rides?.metro?.stations ?? []) out.push({ kind: "metro", x: st.pad.x, z: st.pad.z, label: st.name });
     out.push({ kind: "uplink", x: this.m.uplink.x, z: this.m.uplink.z, label: this.m.uplink.name });
     for (const b of this.m.barricades) out.push({ kind: "barricade", x: b.x, z: b.z });
     for (const f of this.fences.list) if (f.active) out.push({ kind: "fence", x: f.h.x, z: f.h.z });
     const p = this.o.player.pos;
     for (const r of this.o.robots.list) {
       if (!r.alive) continue;
-      if (Math.hypot(r.pos.x - p.x, r.pos.z - p.z) > 140) continue;
-      out.push({ kind: r.kind === "turret" ? "turret" : "robot", x: r.pos.x, z: r.pos.z });
+      if (r.kind !== "titan" && Math.hypot(r.pos.x - p.x, r.pos.z - p.z) > 140) continue;
+      out.push({ kind: r.kind === "turret" ? "turret" : r.kind === "titan" ? "titan" : "robot", x: r.pos.x, z: r.pos.z });
     }
     return out;
+  }
+
+  /** Big health bar for the Titan or the data truck when the player is close. */
+  boss(): { name: string; hp: number; max: number } | null {
+    const p = this.o.player.pos;
+    for (const r of this.o.robots.list) {
+      if (r.kind === "titan" && r.alive && Math.hypot(r.pos.x - p.x, r.pos.z - p.z) < 75) return { name: "TITAN", hp: Math.max(0, r.hp), max: r.maxHp };
+    }
+    const t = this.truck;
+    if (t && t.alive && Math.hypot(t.pos.x - p.x, t.pos.z - p.z) < 70) return { name: this.m.courier!.name.toUpperCase(), hp: Math.max(0, t.hp), max: t.maxHp };
+    return null;
+  }
+
+  /** Tracker list for the HUD: vaults, plus the data truck. */
+  hudCores(): { id: string; name: string; state: "locked" | "open" | "taken" | "brute"; hackType: string }[] {
+    const list = this.vaults.map((v) => ({ id: v.v.id, name: v.v.name, state: v.state, hackType: v.v.lock === "titan" ? "titan" : v.v.hackType }));
+    const t = this.truck;
+    if (t) list.push({ id: this.m.courier!.id, name: this.m.courier!.name, state: t.collected ? "taken" : t.alive ? "locked" : "open", hackType: "truck" });
+    return list;
   }
 
   bruteProgress(): number | null {

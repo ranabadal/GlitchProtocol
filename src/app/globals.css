@@ -7,7 +7,7 @@
 :root {
   --bg: #010506;
   --bg2: #04100f;
-  --panel: rgba(4, 16, 15, 0.72);
+  --panel: rgba(4, 16, 15, 0.82);
   --panel-solid: #061513;
   --line: rgba(60, 255, 154, 0.22);
   --line-strong: rgba(60, 255, 154, 0.55);
@@ -58,8 +58,8 @@ h1, h2, h3, h4 { font-family: var(--font-head); margin: 0; letter-spacing: 0.02e
 .backdrop::after {
   content: ""; position: absolute; inset: 0; pointer-events: none;
   background:
-    radial-gradient(ellipse at 50% 40%, rgba(1, 5, 6, 0.15), rgba(1, 5, 6, 0.75) 75%),
-    linear-gradient(180deg, rgba(1, 5, 6, 0.35), rgba(1, 5, 6, 0.1) 30%, rgba(1, 5, 6, 0.65));
+    radial-gradient(ellipse at 50% 40%, rgba(1, 5, 6, 0.0), rgba(1, 5, 6, 0.5) 80%),
+    linear-gradient(180deg, rgba(1, 5, 6, 0.2), rgba(1, 5, 6, 0.0) 30%, rgba(1, 5, 6, 0.45));
 }
 .backdrop-fallback {
   position: fixed; inset: 0; z-index: 0;

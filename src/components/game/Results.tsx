@@ -20,6 +20,7 @@ const HEAD: Record<string, [string, string]> = {
 const BADGES: Record<string, string> = {
   FIRST_CLEAR: "City online", FLAWLESS: "Flawless", HACKERMAN: "Hackerman", SCRAPYARD: "Scrapyard", SPEED_DEMON: "Speed demon",
   ALL_HACKS: "Triple threat", AGENT: "Agent rank", LEGEND: "Legend", COMEBACK: "Comeback", EVENT_PLAYER: "Event player",
+  TITAN_SLAYER: "Titan slayer", TRUCK_STOPPER: "Truck stopper", SHARD_HUNTER: "Shard hunter",
 };
 
 export function Results({ mission, onNext, busy }: { mission: Mission; onNext: () => void; busy: boolean }) {
@@ -42,8 +43,9 @@ export function Results({ mission, onNext, busy }: { mission: Mission; onNext: (
   const rows: [string, string, number][] = [
     ["Data cores", `${b.cores}/${b.coresTotal}`, b.corePoints],
     ["Hacks", `${b.hacksFirstTry} pehli try mein`, b.hackPoints],
-    ["Robots scrap", `${b.kills}`, b.killPoints],
+    ["Robots scrap", `${b.kills}${b.titanDown ? " · TITAN gira!" : ""}${b.truckDown ? " · truck toota!" : ""}`, b.killPoints],
   ];
+  if (b.shardsTotal) rows.push(["Data shards", `${b.shards}/${b.shardsTotal}`, b.shardPoints ?? 0]);
   if (r.cleared) {
     rows.push(["Mission clear", "", b.clear], ["Time bonus", `${b.secondsLeft}s bache`, b.time], ["Flawless", b.livesLost === 0 ? "koi life nahi gayi" : `${b.livesLost} life gayi`, b.flawless]);
   }

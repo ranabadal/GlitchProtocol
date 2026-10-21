@@ -12,9 +12,11 @@ import { createRobotVisual, DroneVisual, TurretVisual, type RobotTemplate, type 
  * decides how they behave.
  */
 
-const HEIGHT: Record<RobotKind, number> = { walker: 2.3, brute: 3.5, drone: 1, turret: 3 };
-const RADIUS: Record<RobotKind, number> = { walker: 0.6, brute: 1.0, drone: 0.95, turret: 1.3 };
-const BOLT_SPEED: Record<RobotKind, number> = { walker: 30, brute: 26, drone: 32, turret: 36 };
+const HEIGHT: Record<RobotKind, number> = { walker: 2.3, brute: 3.5, drone: 1, turret: 3, titan: 6.2, courier: 2.8 };
+const RADIUS: Record<RobotKind, number> = { walker: 0.6, brute: 1.0, drone: 0.95, turret: 1.3, titan: 1.8, courier: 2.4 };
+const BOLT_SPEED: Record<RobotKind, number> = { walker: 30, brute: 26, drone: 32, turret: 36, titan: 28, courier: 34 };
+/** How the player hurt a robot (decides effects, quips and whether the crowd cheers). */
+export type HitBy = "gun" | "scatter" | "blade" | "bomb" | "slap" | "car" | "emp";
 const AI_RANGE = 170;
 const SPAWN_TIME = 1.3;
 
@@ -46,10 +48,15 @@ export class Robot implements RobotTarget {
   spin = new THREE.Vector3();
   reported = false;
   idleTurnT = Math.random() * 4;
+  maxHp: number;
+  /** Titan: next ground-stomp shockwave allowed at this game time. */
+  stompAt = 0;
+  roared = false;
 
   constructor(public id: string, public kind: RobotKind, public visual: RobotVisual, public home: THREE.Vector3, public patrol: Pt[] | null, public group: string) {
     this.stats = ROBOT_STATS[kind];
     this.hp = this.stats.hp;
+    this.maxHp = this.hp;
     this.pos.copy(home);
     this.hover = kind === "drone" ? Math.max(6, home.y || 9) : 0;
     if (kind === "drone") this.pos.y = this.hover;
@@ -165,13 +172,14 @@ class Bolts {
 
 const RED = new THREE.Color(3, 0.25, 0.4);
 const ORANGE = new THREE.Color(3, 1.1, 0.15);
+const MAGENTA = new THREE.Color(3, 0.3, 2.6);
 
 export class Robots implements NoiseListener {
   group = new THREE.Group();
   list: Robot[] = [];
   byId = new Map<string, Robot>();
   /** Called once per robot destroyed by the player. */
-  onKilled: ((r: Robot, by: "gun" | "car" | "emp") => void) | null = null;
+  onKilled: ((r: Robot, by: HitBy) => void) | null = null;
   /** Robots stop shooting (attract mode, mission over). */
   passive = false;
   private bolts = new Bolts();
@@ -186,11 +194,12 @@ export class Robots implements NoiseListener {
     world.listeners.push(this);
   }
 
-  spawn(s: Spawn, opts: { materialize?: boolean; alert?: boolean; group?: string } = {}): Robot | null {
+  spawn(s: Spawn, opts: { materialize?: boolean; alert?: boolean; group?: string; hp?: number } = {}): Robot | null {
     if (this.byId.has(s.id)) return this.byId.get(s.id)!;
     const uTime = this.world.uTime;
-    const visual: RobotVisual = s.kind === "drone" ? new DroneVisual(uTime) : s.kind === "turret" ? new TurretVisual(uTime) : createRobotVisual(this.template, s.kind, uTime);
+    const visual: RobotVisual = s.kind === "drone" ? new DroneVisual(uTime) : s.kind === "turret" ? new TurretVisual(uTime) : createRobotVisual(this.template, s.kind === "titan" ? "titan" : s.kind === "brute" ? "brute" : "walker", uTime);
     const r = new Robot(s.id, s.kind, visual, new THREE.Vector3(s.x, s.y ?? 0, s.z), s.patrol ?? null, opts.group ?? "");
+    if (opts.hp) { r.hp = opts.hp; r.maxHp = opts.hp; }
     r.yaw = Math.random() * Math.PI * 2;
     r.alert = !!opts.alert;
     if (opts.alert && this.world.player) r.lastSeen.copy(this.world.player.pos);
@@ -249,13 +258,20 @@ export class Robots implements NoiseListener {
 
   // ------------------------------------------------------------ damage
 
-  damage(r: Robot, amount: number, at: THREE.Vector3 | null, by: "gun" | "car" | "emp"): boolean {
+  damage(r: Robot, amount: number, at: THREE.Vector3 | null, by: HitBy): boolean {
     if (!r.alive) return false;
+    // The Titan's armour shrugs off part of every hit except bombs.
+    if (r.kind === "titan" && by !== "bomb") amount *= by === "emp" ? 0.5 : 0.8;
     r.hp -= amount;
     r.flash = 1;
     r.alert = true;
     if (this.world.player) r.lastSeen.copy(this.world.player.pos);
     if (at) this.world.fx.sparks(at, null, new THREE.Color(1, 0.6, 0.3), 6, 7);
+    if (!this.passive && by !== "emp" && amount >= 1) {
+      const c = r.centre(this.tmp2).clone();
+      c.y += HEIGHT[r.kind] * 0.45 + 0.3;
+      this.world.fx.number(c, Math.round(Math.min(amount, r.hp + amount)), r.hp <= 0 ? "#ffd84a" : by === "slap" ? "#ff8ad8" : "#ffffff");
+    }
     if (r.hp <= 0) {
       this.kill(r, by);
       return true;
@@ -263,11 +279,11 @@ export class Robots implements NoiseListener {
     return false;
   }
 
-  private kill(r: Robot, by: "gun" | "car" | "emp"): void {
+  private kill(r: Robot, by: HitBy): void {
     r.state = "dying";
     r.t = 0;
     r.hp = 0;
-    if (r.kind === "walker" || r.kind === "brute") r.visual.play("die", 1.6);
+    if (r.kind === "walker" || r.kind === "brute" || r.kind === "titan") r.visual.play("die", r.kind === "titan" ? 0.9 : 1.6);
     if (r.kind === "turret") {
       const c = r.centre(this.tmp).clone();
       this.world.fx.explosion(c, 1.1);
@@ -292,11 +308,52 @@ export class Robots implements NoiseListener {
       n++;
       if (r.kind === "drone") this.damage(r, 999, null, "emp");
       else {
-        this.damage(r, r.kind === "brute" ? 40 : 30, null, "emp");
-        if (r.alive) { r.state = "stunned"; r.stunUntil = this.world.time + 4; r.visual.play("idle", 0.2); }
+        this.damage(r, r.kind === "brute" ? 40 : r.kind === "titan" ? 80 : 30, null, "emp");
+        if (r.alive) { r.state = "stunned"; r.stunUntil = this.world.time + (r.kind === "titan" ? 1.5 : 4); r.visual.play("idle", 0.2); }
       }
     }
     return n;
+  }
+
+  /** Plasma bomb: damage falls off with distance; everything caught is knocked back. Returns kills. */
+  blast(center: THREE.Vector3, radius: number, maxDamage: number): number {
+    let kills = 0;
+    for (const r of [...this.list]) {
+      if (!r.alive) continue;
+      const c = r.centre(this.tmp);
+      const d = c.distanceTo(center);
+      if (d > radius + RADIUS[r.kind]) continue;
+      const k = Math.max(0.25, 1 - d / (radius + RADIUS[r.kind]));
+      const dir = this.tmp2.copy(c).sub(center).setY(0);
+      if (dir.lengthSq() < 1e-4) dir.set(1, 0, 0);
+      dir.normalize();
+      if (r.kind === "walker" || r.kind === "drone") { r.vel.set(dir.x * 9 * k, 6 * k, dir.z * 9 * k); }
+      if (this.damage(r, maxDamage * k, null, "bomb")) kills++;
+      if (r.alive && r.kind === "walker" && k > 0.5) { r.launched = true; r.spin.set(Math.random() * 6 - 3, 0, Math.random() * 6 - 3); }
+    }
+    return kills;
+  }
+
+  /** Slap: a little damage, a big shove, and a moment of seeing stars. */
+  slap(r: Robot, dirX: number, dirZ: number, damage: number): boolean {
+    if (!r.alive) return false;
+    const heavy = r.kind === "brute" || r.kind === "titan" || r.kind === "turret";
+    const killed = this.damage(r, damage, null, "slap");
+    if (!killed && r.kind !== "turret") {
+      r.vel.set(dirX * (heavy ? 2 : 11), heavy ? 0.5 : 5.5, dirZ * (heavy ? 2 : 11));
+      if (!heavy && r.kind !== "drone") { r.launched = true; r.spin.set(0, 14 * (Math.random() < 0.5 ? -1 : 1), 3); }
+      if (r.kind !== "titan") { r.state = "stunned"; r.stunUntil = this.world.time + (heavy ? 0.8 : 1.6); r.visual.play("idle", 0.2); }
+    } else if (killed && r.kind === "walker") {
+      r.vel.set(dirX * 12, 6, dirZ * 12);
+      r.launched = true;
+      r.spin.set(Math.random() * 8 - 4, 14, Math.random() * 8 - 4);
+    }
+    return killed;
+  }
+
+  /** Lets other enemies (the data truck's roof gun) fire the same dodgeable bolts. */
+  fireBolt(from: THREE.Vector3, vel: THREE.Vector3, dmg: number, color: THREE.Color, size = 1): void {
+    this.bolts.fire(from, vel, dmg, color, size);
   }
 
   /** Ray against every live robot. */
@@ -341,6 +398,15 @@ export class Robots implements NoiseListener {
     for (const r of this.list) {
       if (!r.alive || r.kind === "drone" || r.kind === "turret") continue;
       if (r.launched) continue;
+      if (r.kind === "titan") {
+        // Like hitting a wall: the car bounces off and takes the damage.
+        let near = false;
+        for (const k of [-1.3, 0, 1.3]) if (Math.hypot(r.pos.x - (pos.x + fx * k), r.pos.z - (pos.z + fz * k)) < 1.2 + RADIUS.titan) near = true;
+        if (!near) continue;
+        hit = true;
+        if (speed > 5) { this.damage(r, speed * 2.5, null, "car"); carDamage += 22; slow += 0.9; this.world.sound.crash(1); this.world.shake(0.4); }
+        continue;
+      }
       // Car as two circles along its length.
       let touching = false;
       for (const k of [-1.3, 0, 1.3]) {
@@ -463,6 +529,26 @@ export class Robots implements NoiseListener {
       if (r.t > 1.3) this.remove(r);
       return;
     }
+    // Titan: a chain of explosions while it topples.
+    if (r.kind === "titan") {
+      if (Math.random() < dt * 9 && r.t < 2.2) {
+        const c = r.centre(this.tmp).clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.3) * 3, (Math.random() - 0.5) * 3));
+        w.fx.explosion(c, 0.9);
+        const sp = panFor(w, c.x, c.z);
+        w.sound.explosion(0.7 * sp.vol, sp.pan);
+      }
+      if (r.t >= 2.2 && r.t - dt < 2.2) {
+        const c = r.centre(this.tmp).clone();
+        w.fx.explosion(c, 2.6, new THREE.Color(1, 0.25, 0.9));
+        const sp = panFor(w, c.x, c.z);
+        w.sound.bigBoom(Math.max(0.5, sp.vol), sp.pan);
+        w.shake(0.9 * Math.max(0.4, sp.vol));
+        w.noise(c.x, c.z, 60, "explosion");
+      }
+      if (r.t > 2.2) r.visual.fx.uDissolve.value = Math.min(1, (r.t - 2.2) / 1.4);
+      if (r.t > 3.7) this.remove(r);
+      return;
+    }
     // Walker / brute: fall, then blow up and dissolve into code.
     if (r.t >= 0.9 && r.t - dt < 0.9) {
       const c = r.centre(this.tmp).clone();
@@ -507,9 +593,10 @@ export class Robots implements NoiseListener {
     dir.y += (Math.random() - 0.5) * spread;
     dir.z += (Math.random() - 0.5) * spread * 2;
     dir.normalize();
-    const color = r.kind === "brute" ? ORANGE : RED;
-    this.bolts.fire(from, dir.multiplyScalar(speed), r.stats.damage, color, r.kind === "brute" ? 1.6 : 1);
-    if (r.kind === "brute" && r.burst < 2) { r.burst++; r.fireCd = 0.18; }
+    const color = r.kind === "brute" ? ORANGE : r.kind === "titan" ? MAGENTA : RED;
+    this.bolts.fire(from, dir.multiplyScalar(speed), r.stats.damage, color, r.kind === "brute" ? 1.6 : r.kind === "titan" ? 2.2 : 1);
+    if (r.kind === "titan" && r.burst < 3) { r.burst++; r.fireCd = 0.16; }
+    else if (r.kind === "brute" && r.burst < 2) { r.burst++; r.fireCd = 0.18; }
     else { r.burst = 0; r.fireCd = r.stats.fireEvery * (0.8 + Math.random() * 0.5); }
     r.visual.play("fire", 1.6);
     w.fx.muzzle(from, color);
@@ -528,11 +615,40 @@ export class Robots implements NoiseListener {
     if (r.canSee) { r.alert = true; r.lastSeen.copy(target); }
   }
 
+  /** Titan extras: a roar when it spots you, a ground-stomp shockwave up close, and it guards its vault. */
+  private titanExtras(r: Robot, target: THREE.Vector3 | null): void {
+    const w = this.world;
+    if (!target || !w.player) return;
+    const d = Math.hypot(target.x - r.pos.x, target.z - r.pos.z);
+    if (r.alert && !r.roared) {
+      r.roared = true;
+      w.sound.titanRoar();
+      w.shake(0.35);
+    }
+    if (d < 10 && w.time >= r.stompAt) {
+      r.stompAt = w.time + 4.5;
+      const c = r.pos.clone().setY(0.3);
+      w.fx.ring(c, 11, new THREE.Color(1, 0.2, 0.9), 0.6);
+      w.fx.ring(c, 7, new THREE.Color(1, 0.6, 1), 0.45);
+      for (let i = 0; i < 6; i++) w.fx.smokePuff(c.clone().add(new THREE.Vector3((Math.random() - 0.5) * 6, 0, (Math.random() - 0.5) * 6)), 0.18);
+      const sp = panFor(w, c.x, c.z);
+      w.sound.stomp(Math.max(0.5, sp.vol), sp.pan);
+      w.shake(0.55);
+      const p = w.player;
+      if (p.alive && !p.car && p.pos.y < 0.8 && d < 10) p.takeDamage(18 * (1 - d / 12), c);
+    }
+  }
+
   private walkerAi(r: Robot, dt: number, target: THREE.Vector3 | null): void {
     const w = this.world;
     const h = HEIGHT[r.kind];
     this.lookCheck(r, dt, target, r.pos.y + h * 0.85);
     if (r.launched) return;
+    if (r.kind === "titan") {
+      this.titanExtras(r, target);
+      // Guard the vault: never wander more than 30 m from it.
+      if (Math.hypot(r.pos.x - r.home.x, r.pos.z - r.home.z) > 30) r.lastSeen.copy(r.home);
+    }
     let mx = 0, mz = 0, speed = 0;
     if (r.alert && target) {
       const dist = Math.hypot(target.x - r.pos.x, target.z - r.pos.z);
@@ -588,8 +704,9 @@ export class Robots implements NoiseListener {
       const min = RADIUS[r.kind] + 0.5;
       if (d < min && d > 1e-3) { r.pos.x = p.pos.x + (dx / d) * min; r.pos.z = p.pos.z + (dz / d) * min; }
     }
-    if (speed > r.stats.speed * 0.9) r.visual.play("run", r.kind === "brute" ? 0.7 : 1);
-    else if (speed > 0.3) r.visual.play("walk", r.kind === "brute" ? 0.7 : 1);
+    const anim = r.kind === "titan" ? 0.5 : r.kind === "brute" ? 0.7 : 1;
+    if (speed > r.stats.speed * 0.9) r.visual.play("run", anim);
+    else if (speed > 0.3) r.visual.play("walk", anim);
     else r.visual.play("idle");
   }
 

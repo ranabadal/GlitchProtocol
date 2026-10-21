@@ -47,4 +47,4 @@ export const BAND_LABELS: Record<Band, string> = {
 };
 
 /** Bump when scoring, timing or validation rules change. Stored on every instance and attempt. */
-export const RULESET_VERSION = "gp-city-3.0.0";
+export const RULESET_VERSION = "gp-city-4.0.0";

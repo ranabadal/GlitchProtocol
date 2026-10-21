@@ -19,10 +19,11 @@ const ScreenShader = {
     uGlitch: { value: 0 },
     uHeal: { value: 0 },
     uSpeed: { value: 0 },
+    uDay: { value: 0 },
   },
   vertexShader: /* glsl */ `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse; uniform float uTime; uniform float uDamage; uniform float uGlitch; uniform float uHeal; uniform float uSpeed;
+    uniform sampler2D tDiffuse; uniform float uTime; uniform float uDamage; uniform float uGlitch; uniform float uHeal; uniform float uSpeed; uniform float uDay;
     varying vec2 vUv;
     float h(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
     void main(){
@@ -43,12 +44,12 @@ const ScreenShader = {
       float lines = step(0.985, h(vec2(floor(ang * 80.0), floor(uTime * 30.0)))) * smoothstep(0.25, 0.6, r);
       col += vec3(0.6, 1.0, 0.9) * lines * uSpeed * 0.25;
       // Grade: lift greens a touch, crush blacks.
-      col = mix(col, col * vec3(0.95, 1.03, 1.0), 0.4);
+      col = mix(col, col * vec3(0.95, 1.03, 1.0), 0.4 * (1.0 - uDay));
       col = mix(col, col * vec3(1.05, 1.1, 1.15) + vec3(0.02, 0.03, 0.04), uHeal);
       // Scanlines and vignette.
-      col *= 0.97 + 0.03 * sin(vUv.y * 900.0);
+      col *= 1.0 - (0.03 - 0.03 * sin(vUv.y * 900.0)) * (1.0 - uDay * 0.8);
       float vig = smoothstep(0.85, 0.3, r);
-      col *= mix(0.55, 1.0, vig);
+      col *= mix(mix(0.55, 0.85, uDay), 1.0, vig);
       col = mix(col, vec3(0.9, 0.05, 0.12), uDamage * smoothstep(0.25, 0.75, r) * 0.65);
       gl_FragColor = vec4(col, 1.0);
     }`,
@@ -69,6 +70,12 @@ export class PostFX {
     this.screen = new ShaderPass(ScreenShader);
     this.composer.addPass(this.screen);
     this.composer.addPass(new OutputPass());
+  }
+
+  /** Daylight needs gentler bloom (bright walls must not glow) and a lighter vignette. */
+  setLight(strength: number, threshold: number, day: number): void {
+    if (this.bloom) { this.bloom.strength = strength; this.bloom.threshold = threshold; }
+    if (this.screen) this.screen.uniforms.uDay.value = day;
   }
 
   setSize(w: number, h: number): void {

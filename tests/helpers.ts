@@ -2,13 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { __setAiClientForTests, type ChatClient } from "@/lib/ai/client";
-import { __advanceClockForTests, __resetClockForTests } from "@/lib/clock";
+import { __advanceClockForTests, __resetClockForTests, now } from "@/lib/clock";
 import { __setDbForTests, getDb, openDatabase, type DB } from "@/lib/db";
 import { HACKS } from "@/lib/engine/hacks";
 import { USER_COLS, type UserRow } from "@/lib/http";
 import { beginMission, postEvent, startMission, type MissionView } from "@/lib/services/missions";
 import { registerUser } from "@/lib/services/users";
-import { COUNTDOWN_MS, type MissionPublic, type Pt } from "@/lib/shared/mission";
+import { COUNTDOWN_MS, courierPos, type MissionPublic, type Pt } from "@/lib/shared/mission";
 
 let counter = 0;
 
@@ -109,6 +109,20 @@ export interface PlayOptions {
   downs?: number;
   /** Skip the upload. */
   skipUplink?: boolean;
+  /** Also collect every bonus data shard. */
+  shards?: boolean;
+}
+
+/** Drive to wherever the data truck will be when we get there, at a realistic speed. */
+export function chaseTruck(m: MissionPublic, from: Pt, startedAt: number): Pt {
+  const c = m.courier!;
+  let t = now();
+  for (let i = 0; i < 4; i++) {
+    const p = courierPos(c, (t - startedAt) / 1000);
+    t = now() + Math.ceil((Math.hypot(p.x - from.x, p.z - from.z) / 25) * 1000) + 200;
+  }
+  __advanceClockForTests(t - now());
+  return courierPos(c, (now() - startedAt) / 1000);
 }
 
 /** Plays a whole mission through the event API, like an honest player would. */
@@ -116,21 +130,36 @@ export async function playMission(userId: string, opts: PlayOptions = {}): Promi
   let view = await startMission(await reloadUser(userId), { mode: "personal" });
   view = await beginMission(await reloadUser(userId), view.id);
   __advanceClockForTests(COUNTDOWN_MS + 100);
-  return playStarted(userId, view.id, view.mission, opts);
+  return playStarted(userId, view.id, view.mission, opts, view.startedAt!);
 }
 
-export async function playStarted(userId: string, id: string, m: MissionPublic, opts: PlayOptions = {}): Promise<MissionView> {
+export async function playStarted(userId: string, id: string, m: MissionPublic, opts: PlayOptions = {}, startedAt = now() - 100): Promise<MissionView> {
   const send = async (ev: unknown) => postEvent(await reloadUser(userId), id, ev);
+  const killed = new Set<string>();
   let at: Pt = m.start;
   let view: MissionView | null = null;
   if (opts.killStart !== false) {
     const startRobots = m.groups.filter((g) => g.release === "start").flatMap((g) => g.spawns.map((s) => s.id));
-    for (let i = 0; i < startRobots.length; i += 8) { await send({ type: "kill", robots: startRobots.slice(i, i + 8) }); __advanceClockForTests(1100); }
+    for (let i = 0; i < startRobots.length; i += 8) {
+      const r = await send({ type: "kill", robots: startRobots.slice(i, i + 8) });
+      for (const k of r.outcome.killed ?? []) killed.add(k.id);
+      __advanceClockForTests(1100);
+    }
   }
   for (let d = 1; d <= (opts.downs ?? 0); d++) view = (await send({ type: "down", n: d })).view;
   if (view && view.status !== "active") return view;
   const vaults = m.vaults.slice(0, opts.stopAfterVaults ?? m.vaults.length);
   for (const [vi, v] of vaults.entries()) {
+    if (v.lock === "titan") {
+      // No hack here: the Titan holds the lock. Bring it down, then take the core.
+      travel(at, v.door);
+      at = v.door;
+      if (!killed.has(v.guard!)) { await send({ type: "kill", robots: [v.guard!] }); killed.add(v.guard!); __advanceClockForTests(1100); }
+      travel(at, v.core);
+      at = v.core;
+      view = (await send({ type: "pickup", vault: v.id })).view;
+      continue;
+    }
     travel(at, v.terminal);
     at = v.terminal;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -143,8 +172,25 @@ export async function playStarted(userId: string, id: string, m: MissionPublic, 
       if (j.bruteUntil) { __advanceClockForTests(m.bruteForceSec * 1000 + 100); break; }
     }
     view = (await send({ type: "pickup", vault: v.id })).view;
+    at = v.core;
   }
-  if (opts.stopAfterVaults !== undefined || opts.skipUplink) return view!;
+  if (opts.stopAfterVaults !== undefined) return view!;
+  if (m.courier) {
+    at = chaseTruck(m, at, startedAt);
+    const k = await send({ type: "kill", robots: [m.courier.id] });
+    const drop = k.view.progress.courierDrop ?? at;
+    travel(at, drop);
+    at = drop;
+    view = (await send({ type: "pickup", vault: m.courier.id })).view;
+  }
+  if (opts.shards) {
+    for (const s of m.shards ?? []) {
+      travel(at, s);
+      at = s;
+      view = (await send({ type: "shard", id: s.id })).view;
+    }
+  }
+  if (opts.skipUplink) return view!;
   travel(at, m.uplink);
   await send({ type: "uplink_start" });
   __advanceClockForTests(m.uploadSec * 1000 + 100);

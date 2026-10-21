@@ -39,6 +39,8 @@ export interface ServerProgress {
   picked: string[];
   released: string[];
   killed: string[];
+  shards?: string[];
+  courierDrop?: Pt | null;
   hacks: Record<string, { attempt: number; bruteUntil: number | null; active: { attempt: number; startedAt: number; round: unknown; type: string; timeLimitMs: number } | null }>;
   uplink: { startedAt: number | null; doneAt: number | null };
   score: number;
@@ -62,6 +64,8 @@ export interface MissionBridge {
   down(n: number): Promise<Sync>;
   uplinkStart(): Promise<Sync>;
   uplinkDone(): Promise<Sync>;
+  /** Collect a bonus data shard. */
+  shard(id: string): Promise<Sync & { points: number; allShards: boolean }>;
 }
 
 export type QualityLevel = "low" | "medium" | "high";
@@ -74,14 +78,14 @@ export interface Notice {
 }
 
 export interface MapMarker {
-  kind: "vault" | "vault-done" | "uplink" | "start" | "car" | "robot" | "barricade" | "fence" | "turret";
+  kind: "vault" | "vault-done" | "uplink" | "start" | "car" | "robot" | "barricade" | "fence" | "turret" | "titan" | "truck" | "core" | "shard" | "heli" | "metro";
   x: number;
   z: number;
   label?: string;
 }
 
 export interface HudState {
-  mode: "intro" | "foot" | "car" | "hack" | "dead" | "uplink" | "won" | "lost" | "paused";
+  mode: "intro" | "foot" | "car" | "heli" | "train" | "hack" | "dead" | "uplink" | "won" | "lost" | "paused";
   health: number;
   lives: number;
   heat: number;
@@ -116,6 +120,16 @@ export interface HudState {
   inLobby: boolean;
   firstTime: boolean;
   slowmo: boolean;
+  weapon: "blaster" | "scatter" | "bomb" | "blade";
+  bombs: number;
+  bombCharge: number;
+  stamina: number;
+  altitude: number | null;
+  combo: number;
+  boss: { name: string; hp: number; max: number } | null;
+  heroLine: { text: string; at: number } | null;
+  shards: { got: number; total: number } | null;
+  opTitle: string;
 }
 
 export interface GameCallbacks {

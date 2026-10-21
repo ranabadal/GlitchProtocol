@@ -13,7 +13,7 @@
  * participant ID, an abandoned mission. Test accounts are deleted at the end.
  */
 import { HACKS } from "../src/lib/engine/hacks";
-import { MAX_TRAVEL_SPEED, TRAVEL_SLACK_MS, type MissionPublic, type Pt } from "../src/lib/shared/mission";
+import { coreIds, courierPos, MAX_TRAVEL_SPEED, TRAVEL_SLACK_MS, type MissionPublic, type Pt } from "../src/lib/shared/mission";
 
 const BASE = (process.env.GP_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const roundsArg = process.argv.indexOf("--rounds");
@@ -76,10 +76,12 @@ async function playRound(round: number): Promise<string[]> {
   ok(again.data.id === id && again.data.resumed === true, "starting again resumes the same mission");
   const brief = await c.call("GET", `/api/missions/${id}/briefing`);
   ok(brief.status === 200 && typeof brief.data.briefing === "string", `briefing text (${brief.data.source})`);
-  say(`mission ${id.slice(0, 8)} band ${m.band}: ${m.vaults.length} vaults (${m.vaults.map((v) => v.hackType).join(", ")}), ${m.barricades.length} barricades, ${m.fences.length} fences`);
+  say(`mission ${id.slice(0, 8)} band ${m.band} ${(m.op ?? "classic").toUpperCase()}: ${m.vaults.length} vaults (${m.vaults.map((v) => (v.lock === "titan" ? "TITAN" : v.hackType)).join(", ")})${m.courier ? ", data truck" : ""}, ${m.shards?.length ?? 0} shards, ${m.barricades.length} barricades`);
 
   r = await c.call("POST", `/api/missions/${id}/begin`, {});
   ok(r.status === 200 && r.data.status === "active", "begin");
+  const startedAt = r.data.startedAt as number;
+  const offset = r.data.serverNow - Date.now();
   await sleep(Math.max(0, r.data.startedAt - r.data.serverNow) + 300);
 
   // Robots at the start (in batches the per-second cap allows).
@@ -98,17 +100,27 @@ async function playRound(round: number): Promise<string[]> {
   const early = await c.call("POST", `/api/missions/${id}/event`, { type: "uplink_start" });
   ok(early.status === 409, "upload refused before collecting cores");
 
-  // Vaults.
+  // Vaults (the first hackable one gets a deliberately wrong answer first).
   let at: Pt = m.start;
+  const firstHack = m.vaults.findIndex((v) => v.lock !== "titan");
   for (const [vi, v] of m.vaults.entries()) {
     await travelWait(at, v.terminal);
     at = v.terminal;
+    if (v.lock === "titan") {
+      const no = await c.call("POST", `/api/missions/${id}/event`, { type: "hack_start", vault: v.id });
+      ok(no.status === 409 && no.data.error.code === "TITAN_LOCK", "the Titan's vault cannot be hacked");
+      // The Titan was destroyed with the start robots: its lock is gone.
+      r = await c.call("POST", `/api/missions/${id}/event`, { type: "pickup", vault: v.id });
+      ok(r.status === 200 && r.data.progress.picked.includes(v.id), `core ${v.id} picked after the Titan fell`);
+      at = v.core;
+      continue;
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
       r = await c.call("POST", `/api/missions/${id}/event`, { type: "hack_start", vault: v.id });
       ok(r.status === 200 && r.data.outcome.hack, `hack ${v.id} started (${r.status} ${r.data?.error?.code ?? ""})`);
       const hack = r.data.outcome.hack;
       await sleep(900);
-      const right = !(vi === 0 && attempt === 0);
+      const right = !(vi === firstHack && attempt === 0);
       const solved = HACKS[v.hackType].solve(hack.round) as { index?: number; rot?: number[] };
       const pick = right ? solved : v.hackType === "power" ? { rot: hack.round.rot } : { index: ((solved.index ?? 0) + 1) % (hack.round.tiles?.length ?? hack.round.bots.length) };
       r = await c.call("POST", `/api/missions/${id}/event`, { type: "hack_answer", vault: v.id, attempt, pick });
@@ -136,9 +148,41 @@ async function playRound(round: number): Promise<string[]> {
     at = v.core;
   }
 
+  // The data truck: chase it to where it will be, destroy it, take its core.
+  if (m.courier) {
+    const cr = m.courier;
+    const pre = await c.call("POST", `/api/missions/${id}/event`, { type: "pickup", vault: cr.id });
+    ok(pre.status === 409, "truck core refused while the truck still drives");
+    let target = courierPos(cr, (Date.now() + offset - startedAt) / 1000);
+    for (let i = 0; i < 3; i++) {
+      const eta = Math.max(0, (Math.hypot(target.x - at.x, target.z - at.z) / MAX_TRAVEL_SPEED) * 1000 - TRAVEL_SLACK_MS) + 600;
+      target = courierPos(cr, (Date.now() + offset + eta - startedAt) / 1000);
+    }
+    await travelWait(at, target);
+    r = await c.call("POST", `/api/missions/${id}/event`, { type: "kill", robots: [cr.id] });
+    ok(r.status === 200 && (r.data.outcome.killed ?? []).length === 1, `data truck destroyed (${JSON.stringify(r.data.outcome.rejected ?? [])})`);
+    const drop = r.data.progress.courierDrop as Pt;
+    at = target;
+    await travelWait(at, drop);
+    r = await c.call("POST", `/api/missions/${id}/event`, { type: "pickup", vault: cr.id });
+    ok(r.status === 200 && r.data.progress.picked.includes(cr.id), "truck core picked");
+    at = drop;
+    say(`data truck down: ${cr.name}`);
+  }
+
+  // A couple of bonus shards on the way.
+  for (const sh of [...(m.shards ?? [])].sort((a, b) => Math.hypot(a.x - at.x, a.z - at.z) - Math.hypot(b.x - at.x, b.z - at.z)).slice(0, 2)) {
+    await travelWait(at, sh);
+    r = await c.call("POST", `/api/missions/${id}/event`, { type: "shard", id: sh.id });
+    ok(r.status === 200 && r.data.outcome.points > 0, `shard ${sh.id} collected`);
+    const dup = await c.call("POST", `/api/missions/${id}/event`, { type: "shard", id: sh.id });
+    ok(dup.data.outcome.duplicate === true, "resent shard counted once");
+    at = sh;
+  }
+
   // Refresh mid-mission: same state comes back.
   const mid = await c.call("GET", `/api/missions/${id}`);
-  ok(mid.data.progress.picked.length === m.vaults.length && mid.data.status === "active", "refresh keeps progress");
+  ok(mid.data.progress.picked.length === coreIds(m).length && mid.data.status === "active", "refresh keeps progress");
 
   await travelWait(at, m.uplink, m.uplink.radius);
   r = await c.call("POST", `/api/missions/${id}/event`, { type: "uplink_start" });
@@ -151,7 +195,7 @@ async function playRound(round: number): Promise<string[]> {
   ok(r.status === 200 && r.data.status === "completed" && r.data.result?.cleared, "mission cleared");
   const res = r.data.result;
   ok(res.breakdown.killPoints >= killPts, "kill points recorded");
-  ok(res.score === res.breakdown.corePoints + res.breakdown.hackPoints + res.breakdown.killPoints + res.breakdown.clear + res.breakdown.time + res.breakdown.flawless, "score adds up");
+  ok(res.score === res.breakdown.corePoints + res.breakdown.hackPoints + res.breakdown.killPoints + res.breakdown.shardPoints + res.breakdown.clear + res.breakdown.time + res.breakdown.flawless, "score adds up");
   say(`cleared: score ${res.score}, stars ${res.breakdown.stars}, XP +${res.xpAwarded}${res.breakdown.newAchievements.length ? `, badges ${res.breakdown.newAchievements.join(" ")}` : ""}`);
   const late = await c.call("POST", `/api/missions/${id}/event`, { type: "kill", robots: ["r0"] });
   ok(late.data.outcome?.duplicate === true && late.data.result.score === res.score, "events after the finish change nothing");
@@ -167,7 +211,9 @@ async function playRound(round: number): Promise<string[]> {
   c.cookie = "";
   ok((await c.call("GET", "/api/me")).status === 401, "logged out");
   r = await c.call("POST", "/api/auth/login", { identifier: pid, password: pw });
-  ok(r.status === 200 && r.data.stats.wins >= 1, "login by participant ID keeps history");
+  ok(r.status === 200 && r.data.user.participantId === pid, "login by participant ID");
+  r = await c.call("GET", "/api/me");
+  ok(r.status === 200 && r.data.stats.wins >= 1, "history kept after logging back in");
 
   // Abandon a second mission.
   r = await c.call("POST", "/api/missions/start", { mode: "personal" });

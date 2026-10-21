@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { SESSION_COOKIE, userIdForSession } from "./auth";
+import { SESSION_COOKIE, sessionUser } from "./auth";
 import { getDb } from "./db";
 
 export class HttpError extends Error {
@@ -111,9 +111,7 @@ export function sessionToken(req: Request): string | null {
 }
 
 export async function optionalUser(req: Request): Promise<UserRow | null> {
-  const id = await userIdForSession(sessionToken(req));
-  if (!id) return null;
-  return (await getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE id = ?`).get<UserRow>(id)) ?? null;
+  return sessionUser<UserRow>(sessionToken(req), USER_COLS);
 }
 
 export async function loadUser(id: string): Promise<UserRow> {

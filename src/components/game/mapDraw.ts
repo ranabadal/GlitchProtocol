@@ -1,4 +1,4 @@
-import { BLOCK, getCity, HALF, ROAD, SIZE } from "@/lib/shared/city";
+import { BLOCK, getCity, HALF, ROAD, roadPos, SIZE } from "@/lib/shared/city";
 import type { MapMarker } from "@/game/types";
 import type { Pt } from "@/lib/shared/mission";
 
@@ -50,6 +50,13 @@ export function cityImage(vaultBuildings: string[] = []): HTMLCanvasElement {
     g.lineWidth = vaults.has(b.id) ? 2 : 1;
     g.strokeRect(x + 0.5, z + 0.5, b.w * mapScale - 1, b.d * mapScale - 1);
   }
+  // Skyline Metro track.
+  const m0 = toMap(roadPos(1), roadPos(1)), m1 = toMap(roadPos(6), roadPos(6));
+  g.strokeStyle = "rgba(41, 217, 255, 0.35)";
+  g.lineWidth = 3;
+  g.setLineDash([10, 6]);
+  g.strokeRect(m0[0], m0[1], m1[0] - m0[0], m1[1] - m0[1]);
+  g.setLineDash([]);
   // Spire.
   const sp = city.blocks.find((b) => b.kind === "spire")!;
   const [sx, sz] = toMap(sp.x, sp.z);
@@ -74,6 +81,12 @@ export const MARKER_COLORS: Record<MapMarker["kind"], string> = {
   barricade: "#ff4d4d",
   fence: "#ff3d6e",
   turret: "#ff7a3d",
+  titan: "#ff4fd8",
+  truck: "#ff4fd8",
+  core: "#3cff9a",
+  shard: "#ffd84a",
+  heli: "#e8f4ff",
+  metro: "#29d9ff",
 };
 
 /** Draw one marker icon at screen position (x, y), always upright. */
@@ -112,6 +125,34 @@ export function drawMarker(g: CanvasRenderingContext2D, m: MapMarker, x: number,
     case "barricade": g.lineWidth = 3; g.beginPath(); g.moveTo(-s * 0.6, -s * 0.6); g.lineTo(s * 0.6, s * 0.6); g.moveTo(s * 0.6, -s * 0.6); g.lineTo(-s * 0.6, s * 0.6); g.stroke(); break;
     case "fence": g.lineWidth = 2; g.setLineDash([3, 3]); g.beginPath(); g.arc(0, 0, s * 0.55, 0, Math.PI * 2); g.stroke(); g.setLineDash([]); g.fillRect(-1.5, -1.5, 3, 3); break;
     case "start": g.fillRect(-s * 0.4, -s * 0.4, s * 0.8, s * 0.8); break;
+    case "titan": {
+      g.lineWidth = 2.5;
+      g.beginPath(); g.arc(0, 0, s * 0.95, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.moveTo(-s * 0.5, s * 0.35); g.lineTo(-s * 0.5, -s * 0.25); g.lineTo(-s * 0.2, s * 0.05); g.lineTo(0, -s * 0.45); g.lineTo(s * 0.2, s * 0.05); g.lineTo(s * 0.5, -s * 0.25); g.lineTo(s * 0.5, s * 0.35); g.closePath(); g.fill();
+      if (active) { g.globalAlpha = 0.5 + 0.5 * Math.sin(performance.now() / 200); g.beginPath(); g.arc(0, 0, s * 1.7, 0, Math.PI * 2); g.stroke(); }
+      break;
+    }
+    case "truck": {
+      g.globalAlpha = 0.6 + 0.4 * Math.sin(performance.now() / 150);
+      g.fillRect(-s * 0.7, -s * 0.4, s * 1.0, s * 0.8);
+      g.fillRect(s * 0.35, -s * 0.25, s * 0.35, s * 0.55);
+      g.globalAlpha = 1;
+      g.lineWidth = 2; g.beginPath(); g.arc(0, 0, s * 1.25, 0, Math.PI * 2); g.stroke();
+      break;
+    }
+    case "core": g.beginPath(); g.moveTo(0, -s * 0.7); g.lineTo(s * 0.5, 0); g.lineTo(0, s * 0.7); g.lineTo(-s * 0.5, 0); g.closePath(); g.fill(); break;
+    case "shard": g.beginPath(); g.moveTo(0, -s * 0.45); g.lineTo(s * 0.3, 0); g.lineTo(0, s * 0.45); g.lineTo(-s * 0.3, 0); g.closePath(); g.fill(); break;
+    case "heli": {
+      g.lineWidth = 2; g.beginPath(); g.arc(0, 0, s * 0.75, 0, Math.PI * 2); g.stroke();
+      g.font = `bold ${Math.round(s * 1.05)}px sans-serif`; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("H", 0, s * 0.05);
+      break;
+    }
+    case "metro": {
+      g.fillStyle = "rgba(41,217,255,0.25)"; g.fillRect(-s * 0.6, -s * 0.6, s * 1.2, s * 1.2);
+      g.fillStyle = c; g.lineWidth = 1.5; g.strokeRect(-s * 0.6, -s * 0.6, s * 1.2, s * 1.2);
+      g.font = `bold ${Math.round(s * 0.95)}px sans-serif`; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("M", 0, s * 0.05);
+      break;
+    }
     case "car": g.fillRect(-s * 0.5, -s * 0.3, s, s * 0.6); break;
   }
   g.restore();

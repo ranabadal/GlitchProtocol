@@ -10,8 +10,9 @@ Built for a school science fair (classes 5–12): Hinglish text, keyboard + mous
 | What players do | How |
 |---|---|
 | Explore a whole city | 7 × 7 blocks of towers, roads, parks, plazas, traffic and pedestrians |
-| Drive any car | Walk up to a car and press **F**. Shift = nitro, Space = handbrake drift |
-| Fight robots | Walkers, drones, brutes and street-corner turrets. Blaster (heats up), **Q** EMP blast, or run them over |
+| Get around | Run (Shift, uses stamina) and dodge-roll (C). Press **F** at any car, at a **helicopter** on a plaza helipad, or on a **Skyline Metro** station pad (an elevated train loops the city) |
+| Fight robots | Walkers, drones, brutes, street-corner turrets and the **TITAN** boss. Four weapons — Blaster (heats up), Scatter gun, Plasma bomb, Energy blade — plus **V** slap, **Q** EMP blast, or run them over. Damage numbers, combos and spoken one-liners ("Aahh, easy for me!") |
+| Different every time | Four operation types: **Vault Run**, **Titan Hunt** (a boss holds one vault's lock), **Data Truck Chase** (NULL's armoured truck drives around with a core) and **Blitz** (both). Six bonus **data shards** hide on the streets |
 | Get past hurdles | Barricaded roads (find another way), laser fences (shoot a pylon to drop them), alarm squads, robot patrols |
 | Hack vaults | The three original challenge types as quick hologram hacks: **Data Stream Breach** (Pattern Breaker), **Firewall Bypass** (System Override), **Identity Scan** (Spot the Contradiction) |
 | Finish the mission | Carry every core to the uplink tower and stay in the ring while the upload completes |
@@ -102,13 +103,13 @@ These commands work while the game is running — run them in a second terminal.
 
 ## 5. How a mission is made (and why it's fair)
 
-- **Fixed city, unique missions.** Neon City's layout is generated from a constant seed, so the browser and the server agree on every road and building. Each mission is generated on the server from a fresh seed: which safehouse you start at, which buildings are vaults, the uplink tower, barricaded roads, laser fences, turrets, robot squads and every hack puzzle.
-- **Validated before you see it.** A validator checks that every vault and the uplink can be reached around the barricades, that the best route fits the timer with room to spare, that no robot spawns inside a wall, and that every hack puzzle has **exactly one** correct answer. Invalid candidates are regenerated; if generation ever fails, a verified bank of known-good missions is used.
+- **Fixed city, unique missions.** Neon City's layout is generated from a constant seed, so the browser and the server agree on every road and building. Each mission is generated on the server from a fresh seed: the operation type (more Titans and trucks at higher threat levels), which safehouse you start at, which buildings are vaults, the uplink tower, barricaded roads, laser fences, turrets, robot squads, the Titan, the data truck's route, the bonus shards and every hack puzzle.
+- **Validated before you see it.** A validator checks that every vault, the truck's loop and the uplink can be reached around the barricades, that the truck drives only on open roads at a speed a car can catch, that each Titan vault has its Titan, that the best route (including the boss fight and the chase) fits the timer with room to spare, that no robot spawns inside a wall, and that every hack puzzle has **exactly one** correct answer. Invalid candidates are regenerated; if generation ever fails, a verified bank of known-good missions is used.
 - **Stored and repeat-free.** Each mission instance is saved in the database with its seed, template version, band, inputs, ruleset version, answer key and timestamps; refreshing the page brings back the exact same mission and progress. Fingerprints of each player's past missions keep new ones from repeating.
 - **Adaptive, transparently.** Threat level 1–5 (Rookie → Legend) moves up after winning streaks and down after losing streaks. The rules are shown on the Profile page (Steady / Balanced / Bold pace). Hacks you failed recently show up more often, for practice.
-- **The server is the referee.** The browser only reports events (hack started/answered, core picked up, robot destroyed, life lost, upload started/finished). The server checks order (hack before core, all cores before upload), judges every hack answer itself, rejects robots that weren't deployed yet, caps kills per second, refuses impossible travel times (nobody can cross the city faster than a car), and enforces the mission clock. Resent events never count twice.
+- **The server is the referee.** The browser only reports events (hack started/answered, core picked up, robot destroyed, life lost, upload started/finished). The server checks order (hack before core, Titan before its core, truck destroyed before its core, all cores before upload), judges every hack answer itself, knows where the data truck is at every moment (so it can only be destroyed by someone near it), rejects robots that weren't deployed yet, caps kills per second, refuses impossible travel times (nobody can cross the city faster than a car), and enforces the mission clock. Resent events never count twice.
 
-**Scoring** (all × band multiplier ×1.0 / 1.25 / 1.5 / 1.75 / 2.0): data core 400 · hack 1st try 150 + up to 150 speed bonus · 2nd try 75 + up to 75 · 3rd try 40 · robot: walker 40, drone 30, brute 120, turret 80 · mission clear 1000 + 4 per second left · flawless (no lives lost) 400. A failed mission keeps what you earned but gets no clear/time/flawless bonus. Three failed hacks open the vault by brute force after 10 seconds (no hack points).
+**Scoring** (all × band multiplier ×1.0 / 1.25 / 1.5 / 1.75 / 2.0): data core 400 · hack 1st try 150 + up to 150 speed bonus · 2nd try 75 + up to 75 · 3rd try 40 · robot: walker 40, drone 30, brute 120, turret 80, **Titan 500**, **data truck 300** · data shard 60 (+300 for all of them) · mission clear 1000 + 4 per second left · flawless (no lives lost) 400. A failed mission keeps what you earned but gets no clear/time/flawless bonus. Three failed hacks open the vault by brute force after 10 seconds (no hack points).
 
 **Leaderboards** are kept separate so like is compared with like: Overall (personal missions), Threat level (best clear per band), and Event (the shared mission).
 
@@ -142,18 +143,23 @@ The mission-engine tests cover the required checks: different valid missions for
 
 | Key | Action |
 |---|---|
-| W A S D / arrows | Move / drive |
+| W A S D / arrows | Move / drive / fly |
 | Mouse | Look and aim (click the game once to capture the mouse) |
-| Left click | Fire blaster (it overheats — let it cool) |
+| Left click | Use the weapon in hand (also fires the helicopter's nose gun) |
 | Right click | Aim / zoom |
-| Shift | Sprint / nitro |
-| Space | Jump / handbrake |
-| F | Get in or out of any car |
+| 1 2 3 4 / mouse wheel | Blaster · Scatter gun · Plasma bomb · Energy blade |
+| V | Slap whatever is in front of you (any weapon) |
+| Shift | Run (stamina bar) / car nitro / helicopter down |
+| Space | Jump / handbrake / helicopter up |
+| C | Dodge roll (most bolts miss you mid-roll) |
+| F | Get in or out of a car, a helicopter or the Skyline Metro |
 | E | Hack a vault terminal |
 | Q | EMP blast (stuns robots, drops drones) |
 | M or Tab | City map |
 | H | Horn |
-| Esc | Pause (the mission clock keeps running on the server) |
+| Esc | Pause + settings (the mission clock keeps running on the server) |
+
+**Settings (pause menu):** brightness **Din / Shaam / Raat** (day is the default), graphics level, sound, spoken voices on/off, mouse speed, invert Y, and "Shift toggle-run" (tap Shift once instead of holding it). They are remembered in the browser.
 
 In a hack: click (or use number keys / arrows + Enter). Firewall Bypass: click tiles to rotate them; it submits by itself when power reaches the lock.
 
@@ -180,6 +186,8 @@ tests/                   vitest suites
 Offline mode keeps everything (players, missions, photos) in `data/pglite/`, which is git-ignored.
 
 ## 11. Troubleshooting
+
+- **Online version feels slow (actions take ~1 s):** every action waits for the database. Make the Supabase project in the region closest to the players (Mumbai, `ap-south-1`, for India) and put Vercel's function region next to it. For a fair at school, the offline mode is the fastest of all.
 
 - **Black screen or very slow:** update Chrome/Edge, make sure hardware acceleration is on (chrome://settings → System), choose Low in the pause menu.
 - **Mouse doesn't turn the camera:** click inside the game once. After Esc, wait a second before clicking Resume (browsers block re-capturing the mouse instantly).

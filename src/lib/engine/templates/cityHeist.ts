@@ -1,9 +1,12 @@
 import {
   accessNodes, blockAt, doorInfo, getCity, isBlocked, lobbyLayout, nodeId, pointOnEdge, roadDistance, roadPos, shortestPath,
-  type Building, type Edge, GRID, PITCH,
+  type Building, type Edge, GRID, PITCH, ROAD,
 } from "../../shared/city";
 import { CITY_VERSION } from "../../shared/city";
-import { releaseKeysFor, UPLINK_RADIUS, type HackType, type Hurdle, type MissionPublic, type Pt, type Spawn, type SpawnGroup, type VaultPublic } from "../../shared/mission";
+import {
+  courierPos, loopLength, releaseKeysFor, UPLINK_RADIUS,
+  type CourierPublic, type HackType, type Hurdle, type MissionOp, type MissionPublic, type Pt, type ShardPublic, type Spawn, type SpawnGroup, type VaultPublic,
+} from "../../shared/mission";
 import { HACK_TYPES, HACKS, type HackBand } from "../hacks";
 import type { Rng } from "../rng";
 import { sha256 } from "../rng";
@@ -15,11 +18,13 @@ import type { Band, GeneratedMission, GenInputs, MissionTemplate, Validation } f
  * fight past the guards, hack the terminal, grab the core, then carry every core to an
  * uplink tower and hold the zone while the upload runs.
  *
- * Everything that changes between players comes from the seed: the safehouse you
- * start at, which buildings are vaults, the uplink, barricaded roads, laser fences,
- * turrets, robot squads and the hack puzzles. The validator re-checks that every vault
- * and the uplink are reachable around the barricades, that the route fits the timer,
- * and that every hack puzzle has exactly one answer.
+ * Everything that changes between players comes from the seed: the operation type
+ * (Vault Run, Titan Hunt, Data Truck Chase or Blitz), the safehouse you start at, which
+ * buildings are vaults, the uplink, barricaded roads, laser fences, turrets, robot
+ * squads, the Titan boss, the data truck's route, bonus data shards and the hack
+ * puzzles. The validator re-checks that every vault, the truck's loop and the uplink are
+ * reachable around the barricades, that the route fits the timer, and that every hack
+ * puzzle has exactly one answer.
  */
 
 export interface HackAttempt { type: HackType; round: unknown; key: unknown; tag: string; explain: string }
@@ -43,6 +48,19 @@ const WAVE2_DRONES: Record<Band, number> = { 1: 1, 2: 2, 3: 2, 4: 3, 5: 3 };
 const WAVE2_BRUTES: Record<Band, number> = { 1: 0, 2: 0, 3: 1, 4: 1, 5: 2 };
 export const HACK_BAND: Record<Band, HackBand> = { 1: 1, 2: 1, 3: 2, 4: 2, 5: 3 };
 const BRUTE_FORCE_SEC = 10;
+const COURIER_SPEED: Record<Band, number> = { 1: 10, 2: 11.5, 3: 13, 4: 14.5, 5: 16 };
+const COURIER_EXTRA_SEC = 50;
+const TITAN_EXTRA_SEC = 20;
+const SHARDS = 6;
+/** Operation odds per band: more bosses and trucks at higher threat levels. */
+const OP_WEIGHTS: Record<Band, [MissionOp, number][]> = {
+  1: [["classic", 3], ["courier", 3], ["titan", 2]],
+  2: [["classic", 2], ["courier", 3], ["titan", 3]],
+  3: [["classic", 2], ["courier", 3], ["titan", 3], ["blitz", 1]],
+  4: [["classic", 1], ["courier", 3], ["titan", 3], ["blitz", 3]],
+  5: [["classic", 1], ["courier", 2], ["titan", 3], ["blitz", 4]],
+};
+const TRUCK_NAMES = ["NULL Hauler X9", "Data Truck ZERO", "Black Box 404", "Byte Bandit"];
 
 const MIN_VAULT_FROM_START = 110;
 const MIN_VAULT_FROM_UPLINK = 90;
@@ -52,6 +70,9 @@ const MIN_UPLINK_FROM_START = 220;
 const PLAN_SPEED = 16;
 /** Per-vault allowance: park, fight in, hack, grab the core. */
 const PER_VAULT_SEC = 28;
+/** Extra allowance for beating a Titan and for catching the data truck. */
+const TITAN_FIGHT_SEC = 30;
+const CHASE_SEC = 40;
 
 const dist = (a: Pt, b: Pt) => Math.hypot(a.x - b.x, a.z - b.z);
 
@@ -92,6 +113,27 @@ function placeSpawn(rng: Rng, base: Pt, spread: number, tries = 12): Pt | null {
   return isBlocked(base.x, base.z, 1) ? null : base;
 }
 
+/** The closed road loop around a 2 x 2 group of blocks with corner node (i, k), as points and edge ids. */
+export function loopAround(i: number, k: number, clockwise: boolean): { pts: Pt[]; edges: string[] } {
+  const nodes: [number, number][] = [[i, k], [i + 1, k], [i + 2, k], [i + 2, k + 1], [i + 2, k + 2], [i + 1, k + 2], [i, k + 2], [i, k + 1]];
+  const order = clockwise ? nodes : [nodes[0], ...nodes.slice(1).reverse()];
+  const pts = order.map(([a, b]) => ({ x: roadPos(a), z: roadPos(b) }));
+  const edges = order.map(([a, b], n) => {
+    const [c, d] = order[(n + 1) % order.length];
+    return b === d ? `h${Math.min(a, c)}_${b}` : `v${a}_${Math.min(b, d)}`;
+  });
+  return { pts, edges };
+}
+
+/** Edge id of the road segment between two loop points, or null if they aren't neighbours on one road. */
+function edgeBetween(a: Pt, b: Pt): string | null {
+  const city = getCity();
+  const na = city.nodes.find((n) => Math.abs(n.x - a.x) < 0.01 && Math.abs(n.z - a.z) < 0.01);
+  const nb = city.nodes.find((n) => Math.abs(n.x - b.x) < 0.01 && Math.abs(n.z - b.z) < 0.01);
+  if (!na || !nb) return null;
+  return city.adjacency[na.id].find((e) => city.adjacency[nb.id].includes(e)) ?? null;
+}
+
 function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
   const band = inputs.band;
   const city = getCity();
@@ -128,7 +170,12 @@ function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
   }
   if (chosen.length < want) return null;
 
-  // 4. Hack types: every type appears before any repeats; practice focus leans the choice.
+  // 4. Operation type. A Titan takes the place of one vault's hack; a data truck adds a core.
+  const op = rng.weighted(OP_WEIGHTS[band].map(([item, weight]) => ({ item, weight })));
+  const titanAt = op === "titan" || op === "blitz" ? rng.int(0, want - 1) : -1;
+  const hasCourier = op === "courier" || op === "blitz";
+
+  // Hack types: every type appears before any repeats; practice focus leans the choice.
   const typeWeight = (t: HackType) => 1 + (focus.some((f) => f.startsWith(`hack:${t}`)) ? 2 : 0);
   const pool = [...HACK_TYPES];
   const types: HackType[] = [];
@@ -146,13 +193,32 @@ function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
     return {
       id: `v${i}`, buildingId: b.id, name: b.name, side: b.door!, door,
       terminal: lay.terminal, core: lay.core, hackType: types[i], hackTimeMs: HACKS[types[i]].timeLimitMs(hb),
+      ...(i === titanAt ? { lock: "titan" as const } : {}),
     };
   });
 
+  // 4b. The data truck's loop: a ring of roads around 2 x 2 blocks, away from the start.
+  let courier: CourierPublic | null = null;
+  let courierEdges: string[] = [];
+  if (hasCourier) {
+    for (let t = 0; t < 20 && !courier; t++) {
+      const i0 = rng.int(0, GRID - 2), k0 = rng.int(0, GRID - 2);
+      const lp = loopAround(i0, k0, rng.chance(0.5));
+      const cx = lp.pts.reduce((n, p) => n + p.x, 0) / lp.pts.length, cz = lp.pts.reduce((n, p) => n + p.z, 0) / lp.pts.length;
+      if (dist({ x: cx, z: cz }, start) < 170) continue;
+      const total = loopLength(lp.pts);
+      const c: CourierPublic = { id: "k0", name: rng.pick(TRUCK_NAMES), loop: lp.pts, speed: COURIER_SPEED[band], offset: +rng.range(0, total).toFixed(1), hp: 300 + band * 40 };
+      if (dist(courierPos(c, 0), start) < 140) continue;
+      courier = c;
+      courierEdges = lp.edges;
+    }
+    if (!courier) return null;
+  }
+
   // 5. Barricades on random roads, never cutting off a vault, the uplink or the start.
-  const protectedEdges = new Set<string>([sd.edge.id, ...chosen.map((c) => doorInfo(c.b).edge.id), ...uplinkEdges(uplink.block)]);
+  const protectedEdges = new Set<string>([sd.edge.id, ...chosen.map((c) => doorInfo(c.b).edge.id), ...uplinkEdges(uplink.block), ...courierEdges]);
   const blocked = new Set<string>();
-  const targets: Pt[] = [...vaults.map((v) => v.door), uplink];
+  const targets: Pt[] = [...vaults.map((v) => v.door), uplink, ...(courier ? courier.loop : [])];
   for (const e of rng.shuffle(city.edges)) {
     if (blocked.size >= BARRICADES[band]) break;
     if (protectedEdges.has(e.id)) continue;
@@ -205,6 +271,16 @@ function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
     const di = doorInfo(chosen[i].b);
     const out: Spawn[] = [];
     const front = { x: di.door.x + di.normal[0] * 7, z: di.door.z + di.normal[1] * 7 };
+    if (v.lock === "titan") {
+      // The Titan stands guard on the street in front of its vault, with a couple of walkers.
+      const boss = mk("titan", placeSpawn(rng, { x: di.door.x + di.normal[0] * 11, z: di.door.z + di.normal[1] * 11 }, 3));
+      if (!boss.length) return null;
+      v.guard = boss[0].id;
+      add(`g-${v.id}-titan`, "start", boss);
+      for (let g = 0; g < Math.max(1, GUARDS_OUT[band] - 1); g++) out.push(...mk("walker", placeSpawn(rng, front, 6)));
+      add(`g-${v.id}-out`, "start", out);
+      continue;
+    }
     for (let g = 0; g < GUARDS_OUT[band]; g++) out.push(...mk("walker", placeSpawn(rng, front, 6)));
     for (let g = 0; g < BRUTES_AT_VAULT[band]; g++) out.push(...mk("brute", placeSpawn(rng, front, 5)));
     add(`g-${v.id}-out`, "start", out);
@@ -235,9 +311,20 @@ function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
   for (let g = 0; g < WAVE2_BRUTES[band]; g++) w2.push(...mk("brute", placeSpawn(rng, corners[(g + 2) % 4], 3)));
   add("g-up2", "uplink:2", w2);
 
-  // 9. Hack puzzles: three attempts per vault, each with exactly one answer.
+  // 9. Bonus data shards on sidewalks, spread across the city.
+  const shards: ShardPublic[] = [];
+  for (let t = 0; t < 200 && shards.length < SHARDS; t++) {
+    const e = rng.pick(city.edges);
+    const p = pointOnEdge(e, rng.range(0.25, 0.75), (rng.chance(0.5) ? 1 : -1) * (ROAD / 2 + 2));
+    if (isBlocked(p.x, p.z, 1)) continue;
+    if (dist(p, start) < 30 || shards.some((s) => dist(s, p) < 70)) continue;
+    shards.push({ id: `s${shards.length}`, x: +p.x.toFixed(2), z: +p.z.toFixed(2) });
+  }
+
+  // 10. Hack puzzles: three attempts per hackable vault, each with exactly one answer.
   const hacks: Record<string, HackAttempt[]> = {};
   for (const v of vaults) {
+    if (v.lock === "titan") continue;
     const mod = HACKS[v.hackType];
     hacks[v.id] = [];
     for (let a = 0; a < 3; a++) {
@@ -247,11 +334,12 @@ function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
     }
   }
 
+  const timeLimitSec = TIME[band] + (courier ? COURIER_EXTRA_SEC : 0) + (titanAt >= 0 ? TITAN_EXTRA_SEC : 0);
   const mission: MissionPublic = {
     kind: "city-heist",
     cityVersion: CITY_VERSION,
     band,
-    timeLimitSec: TIME[band],
+    timeLimitSec,
     lives: 3,
     uploadSec: UPLOAD[band],
     bruteForceSec: BRUTE_FORCE_SEC,
@@ -263,24 +351,30 @@ function generateCandidate(rng: Rng, inputs: GenInputs): Heist | null {
     fences,
     turrets,
     groups,
+    op,
+    courier,
+    shards,
   };
   const fp = {
     city: CITY_VERSION,
     band,
+    op,
+    courier: courier ? `${courierEdges.slice().sort().join(",")}@${Math.round(courier.offset / 50)}` : null,
     start: safe.id,
     uplink: uplink.block,
-    vaults: vaults.map((v) => `${v.buildingId}:${v.hackType}`).sort(),
+    vaults: vaults.map((v) => `${v.buildingId}:${v.lock === "titan" ? "titan" : v.hackType}`).sort(),
     barricades: [...blocked].sort(),
     fences: fenceEdges.slice().sort(),
-    hacks: vaults.map((v) => hacks[v.id].map((h) => sha256(HACKS[h.type].fingerprintInput(h.round)).slice(0, 12))).flat().sort(),
+    hacks: vaults.filter((v) => hacks[v.id]).map((v) => hacks[v.id].map((h) => sha256(HACKS[h.type].fingerprintInput(h.round)).slice(0, 12))).flat().sort(),
   };
+  const hackTypes = vaults.filter((v) => v.lock !== "titan").map((v) => v.hackType);
   return {
-    variant: `b${band}-${safe.id}-${uplink.block.join("")}`,
-    tags: Array.from(new Set(["city", ...types.map((t) => `hack:${t}`)])),
+    variant: `b${band}-${op}-${safe.id}-${uplink.block.join("")}`,
+    tags: Array.from(new Set(["city", `op:${op}`, ...hackTypes.map((t) => `hack:${t}`)])),
     publicPuzzle: mission,
     answerKey: { hacks },
     fingerprint: sha256(`city-heist|${JSON.stringify(fp)}`),
-    timeLimitSec: TIME[band],
+    timeLimitSec,
   };
 }
 
@@ -308,8 +402,38 @@ export function validateHeist(m: Heist): Validation {
   if ([...blocked].some((e) => !city.edgeById.has(e))) return { ok: false, reason: "barricade on unknown road" };
   if (!allReachable(p.start, [...p.vaults.map((v) => v.door), p.uplink], blocked)) return { ok: false, reason: "barricades cut off an objective" };
 
+  // Data truck: a closed loop of real, open roads, at a speed a car can catch.
+  const c = p.courier ?? null;
+  if (c) {
+    if (c.loop.length < 4) return { ok: false, reason: "truck loop too short" };
+    if (!(c.speed > 0 && c.speed <= 20)) return { ok: false, reason: "truck too fast to catch" };
+    if (!(c.hp > 0)) return { ok: false, reason: "truck has no armour value" };
+    const fenced = new Set(p.fences.map((f) => f.edge));
+    for (let i = 0; i < c.loop.length; i++) {
+      const e = edgeBetween(c.loop[i], c.loop[(i + 1) % c.loop.length]);
+      if (!e) return { ok: false, reason: "truck loop leaves the roads" };
+      if (blocked.has(e) || fenced.has(e)) return { ok: false, reason: "truck loop is barricaded" };
+    }
+    if (!allReachable(p.start, c.loop, blocked)) return { ok: false, reason: "truck loop cut off" };
+  }
+
+  // Titan vaults: guarded by exactly one Titan that is there from the start.
+  const startSpawns = new Map(p.groups.filter((g) => g.release === "start").flatMap((g) => g.spawns.map((s) => [s.id, s] as const)));
+  for (const v of p.vaults) {
+    if (v.lock !== "titan") continue;
+    const boss = v.guard ? startSpawns.get(v.guard) : undefined;
+    if (!boss || boss.kind !== "titan") return { ok: false, reason: `vault ${v.id} has no Titan guard` };
+  }
+
+  for (const s of p.shards ?? []) {
+    if (isBlocked(s.x, s.z, 0.5)) return { ok: false, reason: `shard ${s.id} is inside a wall` };
+  }
+  if ((p.shards ?? []).length > 12) return { ok: false, reason: "too many shards" };
+
   const route = bestRouteLength(p.start, p.vaults.map((v) => v.door), p.uplink, blocked);
-  const estimate = route / PLAN_SPEED + p.vaults.length * PER_VAULT_SEC + p.uploadSec + 30;
+  const titans = p.vaults.filter((v) => v.lock === "titan").length;
+  const chase = c ? Math.min(...c.loop.map((q) => roadDistance(p.start.x, p.start.z, q.x, q.z, blocked))) / PLAN_SPEED + CHASE_SEC : 0;
+  const estimate = route / PLAN_SPEED + p.vaults.length * PER_VAULT_SEC + titans * TITAN_FIGHT_SEC + chase + p.uploadSec + 30;
   if (!(estimate <= p.timeLimitSec * 0.8)) return { ok: false, reason: `route too long for the timer (${Math.round(estimate)}s of ${p.timeLimitSec}s)` };
 
   const ids = new Set<string>();
@@ -330,8 +454,10 @@ export function validateHeist(m: Heist): Validation {
     if (ids.has(t.id)) return { ok: false, reason: `duplicate id ${t.id}` };
     ids.add(t.id);
   }
+  if (c && ids.has(c.id)) return { ok: false, reason: `duplicate id ${c.id}` };
 
   for (const v of p.vaults) {
+    if (v.lock === "titan") continue;
     const attempts = m.answerKey.hacks[v.id];
     if (!attempts || attempts.length !== 3) return { ok: false, reason: `vault ${v.id} needs three hack puzzles` };
     for (const a of attempts) {
@@ -345,7 +471,7 @@ export function validateHeist(m: Heist): Validation {
 
 export const cityHeist: MissionTemplate<MissionPublic, HeistKey> = {
   id: "city-heist",
-  version: 1,
+  version: 2,
   title: "Neon City Heist",
   generateCandidate,
   validate: validateHeist,

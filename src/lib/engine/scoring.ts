@@ -9,7 +9,8 @@ import type { Band } from "./types";
  *   hack, 2nd try         75 + up to 75 for speed
  *   hack, 3rd try         40
  *   brute force            0  (after three failed hacks the vault opens by itself in 10 s)
- *   robot destroyed      walker 40, drone 30, brute 120, turret 80
+ *   robot destroyed      walker 40, drone 30, brute 120, turret 80, TITAN 500, data truck 300
+ *   data shard (optional) 60 each, +300 for collecting every shard in a mission
  *   mission clear        1000 + 4 per second left on the clock
  *   flawless (no lives lost) 400
  * Every item is multiplied by the band: x1.0, x1.25, x1.5, x1.75, x2.0.
@@ -25,7 +26,9 @@ export const SCORING = {
     { base: 75, speed: 75 },
     { base: 40, speed: 0 },
   ],
-  kill: { walker: 40, drone: 30, brute: 120, turret: 80 } as Record<RobotKind, number>,
+  kill: { walker: 40, drone: 30, brute: 120, turret: 80, titan: 500, courier: 300 } as Record<RobotKind, number>,
+  shard: 60,
+  allShards: 300,
   clear: 1000,
   perSecondLeft: 4,
   flawless: 400,
@@ -41,6 +44,10 @@ export function hackPoints(band: Band, attempt: number, elapsedMs: number, limit
   if (!rule) return 0;
   const speedFrac = Math.max(0, Math.min(1, 1 - elapsedMs / limitMs));
   return Math.round((rule.base + rule.speed * speedFrac) * SCORING.bandMultiplier[band]);
+}
+
+export function shardPoints(band: Band, completesSet: boolean): number {
+  return Math.round((SCORING.shard + (completesSet ? SCORING.allShards : 0)) * SCORING.bandMultiplier[band]);
 }
 
 export function corePoints(band: Band): number {

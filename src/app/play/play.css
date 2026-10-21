@@ -52,7 +52,7 @@
 .emp { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: center; color: rgba(41,217,255,0.55); font-family: var(--font-head); font-size: 10px; letter-spacing: 0.1em; }
 .emp.ready { color: var(--cyan); filter: drop-shadow(0 0 6px var(--cyan)); }
 
-.hud-bc { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; width: min(640px, 70vw); }
+.hud-bc { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; width: min(640px, 70vw); }
 .notices { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .notice { font-family: var(--font-head); font-weight: 700; font-size: 17px; padding: 5px 14px; background: rgba(0, 0, 0, 0.55); border-left: 3px solid var(--cyan); transition: opacity 0.3s; animation: rise 0.25s ease both; }
 .notice.good { border-color: var(--green); color: #c9ffe4; }
@@ -169,3 +169,29 @@
   .briefing .grid { grid-template-columns: 1fr !important; }
   .results .grid { grid-template-columns: 1fr !important; }
 }
+
+/* ---------------------------------------------------------------- v4: weapons, bosses, combos */
+.hud-shards b { color: var(--amber); }
+.weapon-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 6px; pointer-events: none; }
+.wslot { display: flex; align-items: center; gap: 5px; padding: 4px 9px; background: rgba(0, 0, 0, 0.45); border: 1px solid rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.6); font-family: var(--font-head); font-size: 12px; letter-spacing: 0.06em; position: relative; }
+.wslot .k { font-family: var(--font-mono); font-size: 11px; opacity: 0.7; }
+.wslot .ic { font-size: 16px; }
+.wslot.on { color: #fff; border-color: var(--green); background: rgba(10, 60, 40, 0.65); box-shadow: 0 0 14px rgba(60, 255, 154, 0.35); transform: translateY(-3px); }
+.wslot.slap { border-color: rgba(255, 138, 216, 0.4); color: #ff8ad8; }
+.wslot .cnt { position: absolute; top: -8px; right: -6px; background: var(--cyan); color: #000; font-size: 10px; padding: 0 4px; border-radius: 6px; }
+.pips { display: flex; gap: 6px; flex: 1; }
+.pips i { flex: 1; height: 10px; background: rgba(255, 255, 255, 0.12); position: relative; overflow: hidden; }
+.pips i.on { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+.pips i.charging::after { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--p, 0%); background: rgba(41, 217, 255, 0.45); }
+.bar.thin { height: 6px; }
+.boss-bar { margin-top: 10px; width: min(460px, 60vw); text-align: center; }
+.boss-bar .hud-label { color: #ff6ad8; letter-spacing: 0.3em; text-shadow: 0 0 10px rgba(255, 79, 216, 0.7); }
+.bar.boss { height: 12px; border-color: rgba(255, 79, 216, 0.6); }
+.bar.boss i { background: linear-gradient(90deg, #ff2d7a, #ff4fd8); box-shadow: 0 0 14px rgba(255, 79, 216, 0.8); transition: width 0.2s; }
+.combo { margin-top: 8px; font-family: var(--font-head); font-size: 26px; font-weight: 800; color: var(--amber); text-shadow: 0 0 16px rgba(255, 178, 41, 0.8), 0 2px 0 #000; animation: combo-pop 0.35s ease-out; }
+@keyframes combo-pop { from { transform: scale(1.6); opacity: 0.2; } to { transform: scale(1); opacity: 1; } }
+.hero-line { position: absolute; left: 16px; bottom: 210px; max-width: 360px; padding: 8px 14px; background: rgba(0, 0, 0, 0.55); border-left: 3px solid var(--green); font-family: var(--font-head); font-size: 18px; color: #eafff5; animation: hero-in 0.25s ease-out; }
+.hero-line span { color: var(--green); font-size: 12px; letter-spacing: 0.2em; margin-right: 6px; }
+@keyframes hero-in { from { transform: translateX(-20px); opacity: 0; } to { transform: none; opacity: 1; } }
+.chip.pink { color: #ff6ad8; border-color: rgba(255, 79, 216, 0.55); }
+@media (max-width: 1100px) { .weapon-bar { transform: translateX(-50%) scale(0.8); transform-origin: bottom center; } .hero-line { bottom: 170px; } }

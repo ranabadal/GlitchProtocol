@@ -4,10 +4,11 @@ import Link from "next/link";
 import { TopBar, useMe } from "@/components/Shell";
 
 const CONTROLS: [string, string][] = [
-  ["W A S D / Arrows", "Chalo, ya gaadi chalao"], ["Mouse", "Camera ghumao, nishana lagao"], ["Left click", "Blaster fire (zyada fire = garam!)"],
-  ["Right click", "Aim / zoom"], ["Shift", "Daudo, gaadi mein nitro"], ["Space", "Jump, gaadi mein handbrake (drift!)"],
-  ["F", "Gaadi mein baitho / utro (koi bhi gaadi)"], ["E", "Vault terminal hack karo"], ["Q", "EMP blast: paas ke robots ruk jaate hain, drones gir jaate hain"],
-  ["M / Tab", "Pura map"], ["H", "Horn"], ["Esc", "Pause"],
+  ["W A S D / Arrows", "Chalo, gaadi chalao, helicopter udao"], ["Mouse", "Camera ghumao, nishana lagao"], ["Left click", "Haath ka weapon chalao"],
+  ["Right click", "Aim / zoom"], ["1 2 3 4 / wheel", "Blaster · Scatter gun · Plasma bomb · Energy blade"], ["V", "Thappad! Robot ud jaata hai (koi bhi weapon ho)"],
+  ["Shift", "Daudo (stamina), gaadi mein nitro, heli neeche"], ["Space", "Jump, handbrake (drift!), heli upar"], ["C", "Dodge roll: goliyon se bacho"],
+  ["F", "Gaadi / helicopter / Skyline Metro mein baitho ya utro"], ["E", "Vault terminal hack karo"], ["Q", "EMP blast: paas ke robots ruk jaate hain, drones gir jaate hain"],
+  ["M / Tab", "Pura map"], ["H", "Horn"], ["Esc", "Pause + settings (Din/Shaam/Raat, mouse speed, awaazein)"],
 ];
 
 const STEPS = [
@@ -16,6 +17,7 @@ const STEPS = [
   { t: "Terminal hack karo", d: "Vault lobby ke andar terminal pe E dabao. 10-16 second ka hologram hack aayega. Galat hua to alarm: aur robots aayenge." },
   { t: "Core uthao", d: "Hack hote hi shield khulta hai. Core ke paas jao, wo apne aap uth jayega. 3 baar fail? Vault 10 second mein khud khulega." },
   { t: "Uplink pe upload", d: "Saare cores lekar hari uplink tower ke ring mein khade raho jab tak upload 100% na ho. Robots ki lehrein aayengi!" },
+  { t: "Har mission alag", d: "Titan Hunt: ek vault ka lock 6 meter ke TITAN ke paas hai, use giraao. Data Truck Chase: NULL ka truck core le ke ghoomta hai, peecha karke todo. Blitz: dono! Sunehre data shards bonus dete hain." },
 ];
 
 const HACKS = [

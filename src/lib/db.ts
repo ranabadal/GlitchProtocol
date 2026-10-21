@@ -58,7 +58,7 @@ export class Statement {
 
 export class DB {
   ready: Promise<void>;
-  constructor(public root: Conn & { transaction<T>(fn: (c: Conn) => Promise<T>): Promise<T>; close(): Promise<void> }, public kind: "postgres" | "pglite") {
+  constructor(public root: Conn & { transaction<T>(fn: (c: Conn) => Promise<T>, lockKey?: string): Promise<T>; close(): Promise<void> }, public kind: "postgres" | "pglite") {
     this.ready = migrate(this);
   }
   prepare(sql: string): Statement {
@@ -72,10 +72,7 @@ export class DB {
   async transaction<T>(fn: () => Promise<T>, lockKey?: string): Promise<T> {
     await this.ready;
     if (txStore.getStore()) return fn();
-    return this.root.transaction(async (c) => {
-      if (lockKey) await c.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey]);
-      return txStore.run(c, fn);
-    });
+    return this.root.transaction((c) => txStore.run(c, fn), lockKey);
   }
   close(): Promise<void> {
     return this.root.close();
@@ -237,6 +234,13 @@ const MIGRATIONS: string[] = [
 
 
 async function migrate(db: DB): Promise<void> {
+  // Fast path for every start after the first: one read, no lock.
+  try {
+    const r = await db.root.query(`SELECT MAX(version) AS v FROM schema_migrations`, []);
+    if (Number((r.rows[0] as { v: number | null })?.v ?? 0) >= MIGRATIONS.length) return;
+  } catch {
+    /* table not there yet */
+  }
   await db.root.transaction(async (c) => {
     await c.query(`SELECT pg_advisory_xact_lock(hashtext('gp-migrate'))`, []);
     await c.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version BIGINT PRIMARY KEY, applied_at BIGINT NOT NULL)`);
@@ -276,18 +280,23 @@ async function openPostgres(url: string): Promise<DB["root"]> {
   pg.types.setTypeParser(20, (v: string) => Number(v)); // int8 -> number (timestamps, counts)
   pg.types.setTypeParser(1700, (v: string) => Number(v)); // numeric (SUM) -> number
   const { connectionString, ssl } = pgConnection(url);
-  const pool = new pg.Pool({ connectionString, ssl, max: Number(process.env.DB_POOL_MAX ?? (process.env.VERCEL ? 3 : 8)), idleTimeoutMillis: 10_000, });
+  const pool = new pg.Pool({ connectionString, ssl, max: Number(process.env.DB_POOL_MAX ?? (process.env.VERCEL ? 3 : 8)),
+    // A fresh encrypted connection to a far-away database costs several round trips, so keep them open.
+    idleTimeoutMillis: process.env.VERCEL ? 60_000 : 300_000, keepAlive: true, });
   const wrap = (c: { query: (s: string, p: unknown[]) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }> }): Conn => ({
     query: async (s, p) => { const r = await c.query(s, p); return { rows: r.rows, affectedRows: r.rowCount ?? 0 }; },
     exec: async (s) => { await c.query(s, []); },
   });
   const root = wrap(pool as never);
+  // Open two connections straight away, so the first players don't wait for the handshakes.
+  for (let i = 0; i < 2; i++) pool.query("SELECT 1").catch(() => {});
   return {
     ...root,
-    async transaction(fn) {
+    async transaction(fn, lockKey) {
       const client = await pool.connect();
       try {
-        await client.query("BEGIN");
+        // BEGIN and the lock travel together: one round trip instead of two.
+        await client.query(lockKey ? `BEGIN; SELECT pg_advisory_xact_lock(hashtext('${lockKey.replace(/'/g, "''")}'))` : "BEGIN");
         const r = await fn(wrap(client as never));
         await client.query("COMMIT");
         return r;
@@ -322,7 +331,10 @@ async function openPglite(dir: string | null): Promise<DB["root"]> {
   });
   return {
     ...wrap(db as unknown as Q),
-    transaction: (fn) => db.transaction((tx) => fn(wrap(tx as unknown as Q))),
+    transaction: (fn, lockKey) => db.transaction(async (tx) => {
+      if (lockKey) await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey]);
+      return fn(wrap(tx as unknown as Q));
+    }),
     close: async () => {
       await db.close();
       if (dir) releaseLock();
@@ -337,7 +349,7 @@ function lazyDb(open: () => Promise<DB["root"]>, kind: DB["kind"]): DB {
   const proxy: DB["root"] = {
     query: async (s, p) => { await opening; return real!.query(s, p); },
     exec: async (s) => { await opening; return real!.exec(s); },
-    transaction: async (fn) => { await opening; return real!.transaction(fn); },
+    transaction: async (fn, lockKey) => { await opening; return real!.transaction(fn, lockKey); },
     close: async () => { await opening; return real!.close(); },
   };
   return new DB(proxy, kind);

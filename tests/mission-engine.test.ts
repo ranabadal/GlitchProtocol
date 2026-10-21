@@ -11,13 +11,15 @@ import { powerHack, type PowerRound } from "@/lib/engine/hacks/power";
 import { sha256 } from "@/lib/engine/rng";
 import { cityHeist, type Heist } from "@/lib/engine/templates/cityHeist";
 import { BANDS } from "@/lib/engine/types";
+import { killPoints, shardPoints } from "@/lib/engine/scoring";
 import { createEvent } from "@/lib/services/events";
 import { beginMission, buildFromBank, getMission, postEvent, startMission, type InstanceRow } from "@/lib/services/missions";
 import { accessNodes, getCity, isBlocked } from "@/lib/shared/city";
-import { COUNTDOWN_MS, type MissionPublic } from "@/lib/shared/mission";
-import { aiReply, fakeAi, freshDb, makeUser, playMission, playStarted, reloadUser, restartDb, travel } from "./helpers";
+import { coreIds, COUNTDOWN_MS, courierPos, type MissionPublic } from "@/lib/shared/mission";
+import { aiReply, chaseTruck, fakeAi, freshDb, makeUser, playMission, playStarted, reloadUser, restartDb, travel } from "./helpers";
 
 const heist = getTemplate("city-heist")!;
+const hackVault = (m: MissionPublic) => m.vaults.find((v) => v.lock !== "titan")!;
 const row = async (id: string) => (await getDb().prepare(`SELECT * FROM mission_instances WHERE id = ?`).get<InstanceRow>(id))!;
 
 beforeEach(async () => {
@@ -93,12 +95,13 @@ describe("3. an active mission does not change after refresh or restart", () => 
     const u = await makeUser();
     const v = await beginMission(u, (await startMission(u, { mode: "personal" })).id);
     __advanceClockForTests(COUNTDOWN_MS + 100);
-    travel(v.mission.start, v.mission.vaults[0].terminal);
-    const h = (await postEvent(u, v.id, { type: "hack_start", vault: "v0" })).outcome.hack!;
-    const again = await postEvent(u, v.id, { type: "hack_start", vault: "v0" });
+    const hv = hackVault(v.mission);
+    travel(v.mission.start, hv.terminal);
+    const h = (await postEvent(u, v.id, { type: "hack_start", vault: hv.id })).outcome.hack!;
+    const again = await postEvent(u, v.id, { type: "hack_start", vault: hv.id });
     expect(again.outcome.duplicate).toBe(true);
     expect(again.outcome.hack!.round).toEqual(h.round);
-    expect((await getMission(u, v.id)).progress.hacks.v0.active!.round).toEqual(h.round);
+    expect((await getMission(u, v.id)).progress.hacks[hv.id].active!.round).toEqual(h.round);
   });
 });
 
@@ -153,7 +156,8 @@ describe("4. invalid generated missions are rejected", () => {
     expect(imposterHack.validate({ bots: [bot(), bot({ eyes: 2 }), bot({ eyes: 2 }), bot(), bot(), bot()], cols: 3 }, { imposter: 1, feature: "eyes" }).ok).toBe(false);
     expect(imposterHack.validate({ bots: [bot(), bot({ eyes: 2, ant: 3 }), bot(), bot(), bot(), bot()], cols: 3 }, { imposter: 1, feature: "eyes" }).ok).toBe(false);
     // And the mission validator catches a bad hack inside a mission.
-    const m = mutate((x) => { const a = x.answerKey.hacks.v0[0]; if (a.type === "glitch") (a.round as GlitchRound).tiles = (a.round as GlitchRound).tiles.map((tt) => ({ ...tt, c: 0, s: 0, z: 1, n: null })); else if (a.type === "power") (a.round as PowerRound).rot = (a.key as { solution: number[] }).solution.slice(); else (a.round as { bots: Bot[] }).bots = (a.round as { bots: Bot[] }).bots.map(() => bot()); });
+    const hv = base().publicPuzzle.vaults.find((v) => v.lock !== "titan")!.id;
+    const m = mutate((x) => { const a = x.answerKey.hacks[hv][0]; if (a.type === "glitch") (a.round as GlitchRound).tiles = (a.round as GlitchRound).tiles.map((tt) => ({ ...tt, c: 0, s: 0, z: 1, n: null })); else if (a.type === "power") (a.round as PowerRound).rot = (a.key as { solution: number[] }).solution.slice(); else (a.round as { bots: Bot[] }).bots = (a.round as { bots: Bot[] }).bots.map(() => bot()); });
     expect(cityHeist.validate(m)).toMatchObject({ ok: false, reason: expect.stringMatching(/hack/) });
   });
 
@@ -189,6 +193,7 @@ describe("5. repeated submissions do not duplicate rewards", () => {
     const v = await beginMission(u, (await startMission(u, { mode: "personal" })).id);
     __advanceClockForTests(COUNTDOWN_MS + 100);
     const m = v.mission;
+    const hv = hackVault(m);
     const rid = m.groups.find((g) => g.release === "start")!.spawns[0].id;
     const k1 = await postEvent(u, v.id, { type: "kill", robots: [rid] });
     const k2 = await postEvent(u, v.id, { type: "kill", robots: [rid, rid] });
@@ -198,17 +203,17 @@ describe("5. repeated submissions do not duplicate rewards", () => {
     const scoreAfterKill = k2.view.progress.score;
     expect(scoreAfterKill).toBe(k1.view.progress.score);
 
-    travel(m.start, m.vaults[0].terminal);
-    const h = (await postEvent(u, v.id, { type: "hack_start", vault: "v0" })).outcome.hack!;
-    const pick = HACKS[m.vaults[0].hackType].solve(h.round);
-    const a1 = await postEvent(u, v.id, { type: "hack_answer", vault: "v0", attempt: 0, pick });
-    const a2 = await postEvent(u, v.id, { type: "hack_answer", vault: "v0", attempt: 0, pick: { index: 0, rot: null } });
+    travel(m.start, hv.terminal);
+    const h = (await postEvent(u, v.id, { type: "hack_start", vault: hv.id })).outcome.hack!;
+    const pick = HACKS[hv.hackType].solve(h.round);
+    const a1 = await postEvent(u, v.id, { type: "hack_answer", vault: hv.id, attempt: 0, pick });
+    const a2 = await postEvent(u, v.id, { type: "hack_answer", vault: hv.id, attempt: 0, pick: { index: 0, rot: null } });
     expect(a1.outcome.judge!.correct).toBe(true);
     expect(a2.outcome.duplicate).toBe(true);
     expect(a2.outcome.judge!.correct).toBe(true);
     expect(a2.view.progress.score).toBe(a1.view.progress.score);
-    const p1 = await postEvent(u, v.id, { type: "pickup", vault: "v0" });
-    const p2 = await postEvent(u, v.id, { type: "pickup", vault: "v0" });
+    const p1 = await postEvent(u, v.id, { type: "pickup", vault: hv.id });
+    const p2 = await postEvent(u, v.id, { type: "pickup", vault: hv.id });
     expect(p2.outcome.duplicate).toBe(true);
     expect(p2.view.progress.score).toBe(p1.view.progress.score);
   });
@@ -442,56 +447,56 @@ describe("server-side checks on gameplay events", () => {
     const u = await makeUser();
     const v = await beginMission(u, (await startMission(u, { mode: "personal" })).id);
     __advanceClockForTests(COUNTDOWN_MS + 100);
-    return { u, v, m: v.mission };
+    return { u, v, m: v.mission, hv: hackVault(v.mission) };
   }
 
   it("rejects teleporting: a hack started too soon after leaving the start", async () => {
-    const { u, v, m } = await started();
-    await expect(postEvent(u, v.id, { type: "hack_start", vault: "v0" })).rejects.toThrowError(/mumkin nahi/);
-    travel(m.start, m.vaults[0].terminal);
-    expect((await postEvent(u, v.id, { type: "hack_start", vault: "v0" })).outcome.hack).toBeTruthy();
+    const { u, v, m, hv } = await started();
+    await expect(postEvent(u, v.id, { type: "hack_start", vault: hv.id })).rejects.toThrowError(/mumkin nahi/);
+    travel(m.start, hv.terminal);
+    expect((await postEvent(u, v.id, { type: "hack_start", vault: hv.id })).outcome.hack).toBeTruthy();
   });
 
   it("objectives run in order: no pickup before the hack, no upload before every core", async () => {
-    const { u, v, m } = await started();
-    travel(m.start, m.vaults[0].terminal);
-    await expect(postEvent(u, v.id, { type: "pickup", vault: "v0" })).rejects.toThrowError(/locked/);
-    travel(m.vaults[0].terminal, m.uplink);
+    const { u, v, m, hv } = await started();
+    travel(m.start, hv.terminal);
+    await expect(postEvent(u, v.id, { type: "pickup", vault: hv.id })).rejects.toThrowError(/locked/);
+    travel(hv.terminal, m.uplink);
     await expect(postEvent(u, v.id, { type: "uplink_start" })).rejects.toThrowError(/core baaki/);
   });
 
   it("a failed hack raises an alarm squad; three failures brute-force the vault open after the countdown", async () => {
-    const { u, v, m } = await started();
-    const rid = m.groups.find((g) => g.release === "alarm:v0:1")!.spawns[0].id;
+    const { u, v, m, hv } = await started();
+    const rid = m.groups.find((g) => g.release === `alarm:${hv.id}:1`)!.spawns[0].id;
     expect((await postEvent(u, v.id, { type: "kill", robots: [rid] })).outcome.rejected![0].reason).toMatch(/not deployed/);
-    travel(m.start, m.vaults[0].terminal);
+    travel(m.start, hv.terminal);
     for (let a = 0; a < 3; a++) {
-      const h = (await postEvent(u, v.id, { type: "hack_start", vault: "v0" })).outcome.hack!;
-      const wrong = m.vaults[0].hackType === "power" ? { rot: (h.round as PowerRound).rot } : { index: (HACKS[m.vaults[0].hackType].solve(h.round) as { index: number }).index === 0 ? 1 : 0 };
-      const j = (await postEvent(u, v.id, { type: "hack_answer", vault: "v0", attempt: a, pick: wrong })).outcome.judge!;
+      const h = (await postEvent(u, v.id, { type: "hack_start", vault: hv.id })).outcome.hack!;
+      const wrong = hv.hackType === "power" ? { rot: (h.round as PowerRound).rot } : { index: (HACKS[hv.hackType].solve(h.round) as { index: number }).index === 0 ? 1 : 0 };
+      const j = (await postEvent(u, v.id, { type: "hack_answer", vault: hv.id, attempt: a, pick: wrong })).outcome.judge!;
       expect(j.correct).toBe(false);
       expect(j.reveal).toBeTruthy();
       if (a === 0) expect((await postEvent(u, v.id, { type: "kill", robots: [rid] })).outcome.killed).toHaveLength(1);
     }
-    await expect(postEvent(u, v.id, { type: "pickup", vault: "v0" })).rejects.toThrowError(/locked/);
+    await expect(postEvent(u, v.id, { type: "pickup", vault: hv.id })).rejects.toThrowError(/locked/);
     __advanceClockForTests(m.bruteForceSec * 1000);
-    expect((await postEvent(u, v.id, { type: "pickup", vault: "v0" })).view.progress.picked).toContain("v0");
+    expect((await postEvent(u, v.id, { type: "pickup", vault: hv.id })).view.progress.picked).toContain(hv.id);
   });
 
   it("an unanswered hack times out and counts as a failure", async () => {
-    const { u, v, m } = await started();
-    travel(m.start, m.vaults[0].terminal);
-    await postEvent(u, v.id, { type: "hack_start", vault: "v0" });
-    __advanceClockForTests(m.vaults[0].hackTimeMs + 5000);
-    const j = (await postEvent(u, v.id, { type: "hack_answer", vault: "v0", attempt: 0, pick: { index: 0, rot: null } })).outcome.judge!;
+    const { u, v, m, hv } = await started();
+    travel(m.start, hv.terminal);
+    await postEvent(u, v.id, { type: "hack_start", vault: hv.id });
+    __advanceClockForTests(hv.hackTimeMs + 5000);
+    const j = (await postEvent(u, v.id, { type: "hack_answer", vault: hv.id, attempt: 0, pick: { index: 0, rot: null } })).outcome.judge!;
     expect(j).toMatchObject({ correct: false, timeout: true });
   });
 
   it("the upload must actually run for its full duration", async () => {
     const { u, v, m } = await started();
     const done = await playStarted(u.id, v.id, m, { skipUplink: true });
-    expect(done.progress.picked).toHaveLength(m.vaults.length);
-    travel(m.vaults[m.vaults.length - 1].core, m.uplink);
+    expect(done.progress.picked).toHaveLength(coreIds(m).length);
+    travel(done.progress.courierDrop ?? m.vaults[m.vaults.length - 1].core, m.uplink);
     await postEvent(u, v.id, { type: "uplink_start" });
     __advanceClockForTests(2000);
     await expect(postEvent(u, v.id, { type: "uplink_done" })).rejects.toThrowError(/chal raha/);
@@ -517,5 +522,131 @@ describe("server-side checks on gameplay events", () => {
     const r = await postEvent(u, v.id, { type: "kill", robots: many.slice(0, 16) });
     expect(r.outcome.killed!.length).toBe(10);
     expect(r.outcome.rejected!.some((x) => x.reason === "too many at once")).toBe(true);
+  });
+});
+
+describe("mission variety: Titan Hunt, Data Truck Chase, Blitz and data shards", () => {
+  /** Start personal missions for fresh players until one matches. */
+  async function missionWhere(pred: (m: MissionPublic) => boolean) {
+    for (let i = 0; i < 40; i++) {
+      const u = await makeUser();
+      const s = await startMission(u, { mode: "personal" });
+      if (!pred(s.mission)) continue;
+      const v = await beginMission(u, s.id);
+      __advanceClockForTests(COUNTDOWN_MS + 100);
+      return { u, v, m: v.mission };
+    }
+    throw new Error("no matching mission in 40 tries");
+  }
+
+  it("every operation type is generated, validates, and harder bands get more bosses and trucks", () => {
+    const seen: Record<string, number> = {};
+    const byBand: Record<number, { boss: number; n: number }> = {};
+    for (const band of BANDS) for (let i = 0; i < 24; i++) {
+      const sel = selectInstance(heist, `ops-${band}-${i}`, { band, focusTags: [] });
+      const p = sel.puzzle.publicPuzzle as MissionPublic;
+      expect(heist.validate(sel.puzzle)).toEqual({ ok: true });
+      seen[p.op!] = (seen[p.op!] ?? 0) + 1;
+      byBand[band] ??= { boss: 0, n: 0 };
+      byBand[band].n++;
+      if (p.op !== "classic") byBand[band].boss++;
+      expect(p.vaults.filter((v) => v.lock === "titan").length).toBe(p.op === "titan" || p.op === "blitz" ? 1 : 0);
+      expect(!!p.courier).toBe(p.op === "courier" || p.op === "blitz");
+      expect((p.shards ?? []).length).toBeGreaterThanOrEqual(4);
+    }
+    for (const op of ["classic", "titan", "courier", "blitz"]) expect(seen[op], op).toBeGreaterThan(0);
+    expect(byBand[5].boss / byBand[5].n).toBeGreaterThan(byBand[1].boss / byBand[1].n);
+  });
+
+  it("a truck loop that is barricaded or leaves the roads is rejected", () => {
+    let base: Heist | null = null;
+    for (let i = 0; !base; i++) { const s = selectInstance(heist, `truck-${i}`, { band: 3, focusTags: [] }).puzzle as Heist; if (s.publicPuzzle.courier) base = s; }
+    const bad1 = structuredClone(base);
+    bad1.publicPuzzle.courier!.loop[1] = { x: bad1.publicPuzzle.courier!.loop[1].x + 7, z: bad1.publicPuzzle.courier!.loop[1].z };
+    expect(cityHeist.validate(bad1)).toMatchObject({ ok: false, reason: expect.stringMatching(/leaves the roads/) });
+    const bad2 = structuredClone(base);
+    bad2.publicPuzzle.courier!.speed = 45;
+    expect(cityHeist.validate(bad2)).toMatchObject({ ok: false, reason: expect.stringMatching(/too fast/) });
+  });
+
+  it("Titan Hunt: the Titan's vault cannot be hacked, and its core unlocks only when the Titan falls", async () => {
+    const { u, v, m } = await missionWhere((x) => x.vaults.some((q) => q.lock === "titan"));
+    const tv = m.vaults.find((q) => q.lock === "titan")!;
+    travel(m.start, tv.terminal);
+    await expect(postEvent(u, v.id, { type: "hack_start", vault: tv.id })).rejects.toThrowError(/TITAN/);
+    await expect(postEvent(u, v.id, { type: "pickup", vault: tv.id })).rejects.toThrowError(/TITAN/);
+    const k = await postEvent(u, v.id, { type: "kill", robots: [tv.guard!] });
+    expect(k.outcome.killed![0].points).toBe(killPoints(m.band as never, "titan"));
+    expect(k.view.progress.unlocked).toContain(tv.id);
+    travel(tv.terminal, tv.core);
+    expect((await postEvent(u, v.id, { type: "pickup", vault: tv.id })).view.progress.picked).toContain(tv.id);
+  });
+
+  it("Data truck: its core needs the truck destroyed nearby, and the upload needs that core too", async () => {
+    const { u, v, m } = await missionWhere((x) => !!x.courier);
+    const c = m.courier!;
+    await expect(postEvent(u, v.id, { type: "pickup", vault: c.id })).rejects.toThrowError(/Truck/);
+    // Reporting a kill from the far side of the city is refused.
+    const far = await postEvent(u, v.id, { type: "kill", robots: [c.id] });
+    const d0 = Math.hypot(courierPos(c, 0.1).x - m.start.x, courierPos(c, 0.1).z - m.start.z);
+    if (d0 > 60 + 52 * 2.6) expect(far.outcome.rejected![0].reason).toMatch(/too far/);
+    // Do everything else first: the upload still refuses without the truck's core.
+    const done = await playStarted(u.id, v.id, { ...m, courier: null }, { skipUplink: true }, v.startedAt!);
+    expect(done.progress.picked).toHaveLength(m.vaults.length);
+    travel(m.vaults[m.vaults.length - 1].core, m.uplink);
+    await expect(postEvent(u, v.id, { type: "uplink_start" })).rejects.toThrowError(/1 core baaki/);
+    // Chase it down, destroy it, grab the core where it fell.
+    const at = chaseTruck(m, m.uplink, v.startedAt!);
+    const k = await postEvent(u, v.id, { type: "kill", robots: [c.id] });
+    expect(k.outcome.killed![0]).toEqual({ id: c.id, points: killPoints(m.band as never, "courier") });
+    const drop = k.view.progress.courierDrop!;
+    expect(Math.hypot(drop.x - at.x, drop.z - at.z)).toBeLessThan(2);
+    travel(at, drop);
+    expect((await postEvent(u, v.id, { type: "pickup", vault: c.id })).view.progress.picked).toContain(c.id);
+    travel(drop, m.uplink);
+    await postEvent(u, v.id, { type: "uplink_start" });
+    __advanceClockForTests(m.uploadSec * 1000 + 100);
+    const fin = await postEvent(u, v.id, { type: "uplink_done" });
+    expect(fin.view.result?.breakdown).toMatchObject({ cores: coreIds(m).length, coresTotal: coreIds(m).length, truckDown: true });
+  });
+
+  it("data shards are optional, counted once, travel-checked, with a bonus for the full set", async () => {
+    const { u, v, m } = await missionWhere((x) => (x.shards ?? []).length >= 2);
+    const sh = m.shards!;
+    const far = sh.reduce((a, b) => (Math.hypot(b.x - m.start.x, b.z - m.start.z) > Math.hypot(a.x - m.start.x, a.z - m.start.z) ? b : a));
+    if (Math.hypot(far.x - m.start.x, far.z - m.start.z) > 140) await expect(postEvent(u, v.id, { type: "shard", id: far.id })).rejects.toThrowError(/mumkin nahi/);
+    let at: { x: number; z: number } = m.start;
+    let total = 0;
+    for (const [i, s] of sh.entries()) {
+      travel(at, s);
+      at = s;
+      const r = await postEvent(u, v.id, { type: "shard", id: s.id });
+      const last = i === sh.length - 1;
+      expect(r.outcome.points).toBe(shardPoints(m.band as never, last));
+      expect(!!r.outcome.allShards).toBe(last);
+      total += r.outcome.points!;
+      expect((await postEvent(u, v.id, { type: "shard", id: s.id })).outcome.duplicate).toBe(true);
+    }
+    expect((await getMission(u, v.id)).progress.points.shards).toBe(total);
+    await expect(postEvent(u, v.id, { type: "shard", id: "s99" })).rejects.toThrowError(/shard/);
+  });
+
+  it("missions saved before these features (no op, truck or shards) still load and finish", async () => {
+    const u = await makeUser();
+    const s = await startMission(u, { mode: "personal" });
+    const old = { ...s.mission } as Partial<MissionPublic>;
+    delete old.op; delete old.courier; delete old.shards;
+    const hvOld = hackVault(s.mission);
+    old.vaults = old.vaults!.map((q) => { const { lock: _l, guard: _g, ...rest } = q; return q.lock === "titan" ? { ...rest, hackType: hvOld.hackType, hackTimeMs: hvOld.hackTimeMs } : rest; });
+    const k = JSON.parse((await row(s.id)).mission_key);
+    for (const q of s.mission.vaults) if (q.lock === "titan") k.hacks[q.id] = k.hacks[hackVault(s.mission).id];
+    const st = JSON.parse((await row(s.id)).state);
+    delete st.shards; delete st.courierDrop; delete st.points.shards;
+    await getDb().prepare(`UPDATE mission_instances SET mission_public = ?, mission_key = ?, state = ? WHERE id = ?`).run(JSON.stringify(old), JSON.stringify(k), JSON.stringify(st), s.id);
+    const v = await beginMission(await reloadUser(u.id), s.id);
+    __advanceClockForTests(COUNTDOWN_MS + 100);
+    const done = await playStarted(u.id, v.id, v.mission, {}, v.startedAt!);
+    expect(done.result?.cleared).toBe(true);
+    expect(done.result?.breakdown).toMatchObject({ coresTotal: old.vaults!.length, shards: 0, shardsTotal: 0 });
   });
 });

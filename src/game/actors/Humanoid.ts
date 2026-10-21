@@ -21,6 +21,18 @@ export interface OperatorPose {
   hack: boolean;       // typing at a terminal
   dead: boolean;
   hurt: number;        // 0..1 flinch
+  /** Weapon in hand. */
+  weapon?: "blaster" | "scatter" | "bomb" | "blade";
+  /** 0..1 progress of a blade slash (or < 0 when not slashing). */
+  swing?: number;
+  /** Which way the slash goes (alternates on combos). */
+  swingSide?: number;
+  /** 0..1 progress of a bomb throw. */
+  throwT?: number;
+  /** 0..1 progress of a slap with the left hand. */
+  slapT?: number;
+  /** 0..1 progress of a dodge roll. */
+  roll?: number;
 }
 
 function limb(len: number, r0: number, r1: number, mat: THREE.Material, seg = 8): { pivot: THREE.Group; mesh: THREE.Mesh } {
@@ -45,7 +57,13 @@ export class OperatorRig {
   private legR: THREE.Group; private shinR: THREE.Group;
   private flapL: THREE.Group; private flapR: THREE.Group;
   private gun = new THREE.Group();
+  private scatterGun = new THREE.Group();
+  private blade = new THREE.Group();
+  private bomb: THREE.Mesh;
   muzzle = new THREE.Object3D();
+  scatterMuzzle = new THREE.Object3D();
+  /** Tip of the energy blade, for slash trails. */
+  bladeTip = new THREE.Object3D();
   private phase = 0;
   private air = 0;
   private deadT = 0;
@@ -146,10 +164,46 @@ export class OperatorRig {
     this.gun.position.set(0, -0.3, 0.02);
     this.foreR.add(this.gun);
 
+    // Scatter gun: a chunky double barrel with an orange power cell.
+    const hot = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 1.1, 0.25), toneMapped: false });
+    this.scatterGun.add(
+      new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.5).translate(0, 0, 0.14), metal),
+      new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.34, 8).rotateX(Math.PI / 2).translate(0.03, 0.035, 0.52), metal),
+      new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.34, 8).rotateX(Math.PI / 2).translate(-0.03, 0.035, 0.52), metal),
+      new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.04, 0.22).translate(0, -0.05, 0.12), hot),
+      new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.15, 0.07).translate(0, -0.11, -0.02), metal),
+    );
+    this.scatterMuzzle.position.set(0, 0.035, 0.72);
+    this.scatterGun.add(this.scatterMuzzle);
+    this.scatterGun.position.set(0, -0.3, 0.02);
+    this.foreR.add(this.scatterGun);
+
+    // Energy blade: a short glowing knife.
+    const edge = new THREE.MeshBasicMaterial({ color: new THREE.Color().setHSL(hue / 360, 1, 0.6).multiplyScalar(3), toneMapped: false });
+    this.blade.add(
+      new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.14, 8).rotateX(Math.PI / 2), metal),
+      new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.05, 0.5).translate(0, 0.0, 0.32), edge),
+      new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, 0.03).translate(0, 0, 0.07), metal),
+    );
+    this.bladeTip.position.set(0, 0, 0.58);
+    this.blade.add(this.bladeTip);
+    this.blade.position.set(0, -0.3, 0.02);
+    this.foreR.add(this.blade);
+
+    // Plasma bomb held in the left hand when selected.
+    this.bomb = new THREE.Mesh(new THREE.IcosahedronGeometry(0.075, 1), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 2.6, 2.2), toneMapped: false }));
+    this.bomb.position.set(0, -0.32, 0.03);
+    this.foreL.add(this.bomb);
+
     this.root.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = true; });
   }
 
   update(dt: number, p: OperatorPose): void {
+    const weapon = p.weapon ?? "blaster";
+    this.gun.visible = weapon === "blaster";
+    this.scatterGun.visible = weapon === "scatter";
+    this.blade.visible = weapon === "blade";
+    this.bomb.visible = weapon === "bomb" && !((p.throwT ?? -1) > 0.45);
     const run = clamp(p.speed / 9, 0, 1);
     const walk = clamp(p.speed / 2.5, 0, 1);
     this.phase += dt * (3.2 + p.speed * 1.05);
@@ -164,6 +218,21 @@ export class OperatorRig {
       return;
     }
     this.deadT = 0;
+    // Dodge roll: tuck and tumble forward.
+    const roll = p.roll ?? -1;
+    if (roll >= 0) {
+      const e = Math.sin(roll * Math.PI);
+      this.body.rotation.x = roll * Math.PI * 2;
+      this.body.position.y = 0.55 * e;
+      this.hips.position.y = 0.98 - 0.45 * e;
+      this.legL.rotation.x = this.legR.rotation.x = -1.6 * e;
+      this.shinL.rotation.x = this.shinR.rotation.x = 2.2 * e;
+      this.armL.rotation.set(-1.2 * e, 0, 0.2);
+      this.armR.rotation.set(-1.2 * e, 0, -0.2);
+      this.foreL.rotation.x = this.foreR.rotation.x = -1.4 * e;
+      this.spine.rotation.set(0.5 * e, 0, 0);
+      return;
+    }
     this.body.rotation.x = 0;
     this.body.position.y = 0;
 
@@ -192,6 +261,34 @@ export class OperatorRig {
       this.armL.rotation.set(-0.9 + tap * 0.05, 0, -0.2);
       this.armR.rotation.set(-0.9 - tap * 0.05, 0, 0.2);
       this.foreL.rotation.x = this.foreR.rotation.x = -0.6;
+    }
+    // Melee: blade slash sweeps the right arm across the body.
+    const sw = p.swing ?? -1;
+    if (sw >= 0) {
+      const side = p.swingSide ?? 1;
+      const e = Math.sin(Math.min(1, sw) * Math.PI * 0.5);
+      this.armR.rotation.set(-1.5, 0, lerp(0.9 * side, -1.1 * side, e));
+      this.foreR.rotation.x = -0.25;
+      this.blade.rotation.set(1.57, 0, 0);
+      this.spine.rotation.y = lerp(0.5 * side, -0.6 * side, e);
+    } else {
+      this.blade.rotation.set(lerp(1.0, 1.57, aim), 0, 0);
+    }
+    // Bomb throw: wind up behind the head, then whip forward.
+    const th = p.throwT ?? -1;
+    if (th >= 0) {
+      const wind = Math.min(1, th / 0.4), fwd = Math.max(0, (th - 0.4) / 0.6);
+      this.armL.rotation.set(lerp(-2.7 * wind, -0.6, fwd), 0, -0.25);
+      this.foreL.rotation.x = lerp(-1.4 * wind, -0.2, fwd);
+      this.spine.rotation.y = lerp(-0.35 * wind, 0.3, fwd);
+    }
+    // Slap: the left hand swings flat across.
+    const sl = p.slapT ?? -1;
+    if (sl >= 0) {
+      const e = Math.sin(Math.min(1, sl) * Math.PI * 0.5);
+      this.armL.rotation.set(-1.45, 0, lerp(-1.5, 0.75, e));
+      this.foreL.rotation.x = -0.15;
+      this.spine.rotation.y = lerp(-0.45, 0.4, e);
     }
     this.head.rotation.x = -p.pitch * 0.5 * aim;
   }

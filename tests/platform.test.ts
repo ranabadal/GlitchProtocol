@@ -16,6 +16,7 @@ import { __advanceClockForTests } from "@/lib/clock";
 import { getDb } from "@/lib/db";
 import { corePoints, hackPoints, killPoints, SCORING } from "@/lib/engine/scoring";
 import type { Band } from "@/lib/engine/types";
+import { coreIds } from "@/lib/shared/mission";
 import { createEvent } from "@/lib/services/events";
 import { overallBoard, eventBoard } from "@/lib/services/leaderboard";
 import { startMission } from "@/lib/services/missions";
@@ -212,14 +213,15 @@ describe("scoring follows the documented rules", () => {
     expect(view.result?.outcome).toBe("success");
     const b = view.result!.breakdown as Record<string, number>;
     const m = { ...view.mission, band: view.mission.band as Band };
-    expect(b.corePoints).toBe(m.vaults.length * corePoints(m.band));
+    expect(b.corePoints).toBe(coreIds(m).length * corePoints(m.band));
     const startRobots = m.groups.filter((g) => g.release === "start").flatMap((g) => g.spawns).map((s) => killPoints(m.band, s.kind)).reduce((a, x) => a + x, 0);
-    expect(b.killPoints).toBe(startRobots);
-    expect(b.hackPoints).toBeGreaterThanOrEqual(m.vaults.length * hackPoints(m.band, 0, m.vaults[0].hackTimeMs, m.vaults[0].hackTimeMs));
+    expect(b.killPoints).toBe(startRobots + (m.courier ? killPoints(m.band, "courier") : 0));
+    const hackVaults = m.vaults.filter((v) => v.lock !== "titan");
+    expect(b.hackPoints).toBeGreaterThanOrEqual(hackVaults.reduce((n, v) => n + hackPoints(m.band, 0, v.hackTimeMs, v.hackTimeMs), 0));
     expect(b.clear).toBe(Math.round(SCORING.clear * SCORING.bandMultiplier[m.band]));
     expect(b.flawless).toBe(Math.round(SCORING.flawless * SCORING.bandMultiplier[m.band]));
     expect(b.time).toBe(Math.round(b.secondsLeft * SCORING.perSecondLeft * SCORING.bandMultiplier[m.band]));
-    expect(view.result!.score).toBe(b.corePoints + b.hackPoints + b.killPoints + b.clear + b.time + b.flawless);
+    expect(view.result!.score).toBe(b.corePoints + b.hackPoints + b.killPoints + b.shardPoints + b.clear + b.time + b.flawless);
     expect((await reloadUser(u.id)).xp).toBe(view.result!.score);
   });
 

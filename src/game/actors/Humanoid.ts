@@ -359,23 +359,29 @@ export class CrowdMeshes {
 
   constructor(public count: number, seed: () => number) {
     const mat = crowdMaterial();
+    // Rounder, more natural bodies (capsules) while staying one draw call per body part.
     const torsoGeo = mergeGeometries([
-      coloured(new THREE.CylinderGeometry(0.19, 0.16, 0.6, 8).scale(1.1, 1, 0.7).translate(0, 0.3, 0), [1, 1, 1]),
-      coloured(new THREE.CylinderGeometry(0.165, 0.17, 0.16, 8).scale(1.1, 1, 0.75).translate(0, -0.06, 0), [0.35, 0.35, 0.38]),
-      coloured(new THREE.BoxGeometry(0.36, 0.02, 0.24).translate(0, 0.44, 0), [1, 1, 1], 1),
+      coloured(new THREE.CapsuleGeometry(0.165, 0.34, 6, 12).scale(1.18, 1, 0.68).translate(0, 0.3, 0), [1, 1, 1]),
+      coloured(new THREE.CapsuleGeometry(0.15, 0.06, 4, 12).scale(1.15, 1, 0.75).translate(0, -0.04, 0), [0.32, 0.32, 0.35]),
+      coloured(new THREE.SphereGeometry(0.09, 8, 6).scale(1.2, 0.8, 1).translate(-0.19, 0.46, 0), [1, 1, 1]),
+      coloured(new THREE.SphereGeometry(0.09, 8, 6).scale(1.2, 0.8, 1).translate(0.19, 0.46, 0), [1, 1, 1]),
     ])!;
     const headGeo = mergeGeometries([
-      coloured(new THREE.CylinderGeometry(0.05, 0.055, 0.1, 6).translate(0, -0.05, 0), [1, 1, 1]),
-      coloured(new THREE.SphereGeometry(0.11, 10, 8).scale(0.92, 1.1, 1).translate(0, 0.08, 0), [1, 1, 1]),
-      coloured(new THREE.SphereGeometry(0.118, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.5).scale(0.95, 1.05, 1.05).translate(0, 0.11, -0.01), [0.08, 0.06, 0.05]),
+      coloured(new THREE.CylinderGeometry(0.048, 0.058, 0.12, 8).translate(0, -0.05, 0), [1, 1, 1]),
+      coloured(new THREE.SphereGeometry(0.108, 14, 12).scale(0.9, 1.12, 1.0).translate(0, 0.08, 0.005), [1, 1, 1]),
+      coloured(new THREE.SphereGeometry(0.03, 6, 4).scale(0.6, 1, 0.6).translate(-0.098, 0.075, 0), [1, 1, 1]),
+      coloured(new THREE.SphereGeometry(0.03, 6, 4).scale(0.6, 1, 0.6).translate(0.098, 0.075, 0), [1, 1, 1]),
+      coloured(new THREE.SphereGeometry(0.116, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.52).scale(0.94, 1.06, 1.06).translate(0, 0.105, -0.012), [0.07, 0.05, 0.04]),
     ])!;
     const armGeo = mergeGeometries([
-      coloured(new THREE.CylinderGeometry(0.05, 0.042, 0.56, 6).translate(0, -0.28, 0), [1, 1, 1]),
-      coloured(new THREE.SphereGeometry(0.043, 6, 4).translate(0, -0.58, 0), [0.75, 0.55, 0.42]),
+      coloured(new THREE.CapsuleGeometry(0.048, 0.26, 4, 8).translate(0, -0.17, 0), [1, 1, 1]),
+      coloured(new THREE.CapsuleGeometry(0.04, 0.22, 4, 8).translate(0, -0.44, 0.01), [0.78, 0.58, 0.44]),
+      coloured(new THREE.SphereGeometry(0.044, 8, 6).scale(0.8, 1.1, 0.6).translate(0, -0.6, 0.01), [0.75, 0.55, 0.42]),
     ])!;
     const legGeo = mergeGeometries([
-      coloured(new THREE.CylinderGeometry(0.075, 0.055, 0.88, 6).translate(0, -0.44, 0), [1, 1, 1]),
-      coloured(new THREE.BoxGeometry(0.1, 0.07, 0.22).translate(0, -0.89, 0.04), [0.15, 0.15, 0.16]),
+      coloured(new THREE.CapsuleGeometry(0.072, 0.36, 4, 8).translate(0, -0.22, 0), [1, 1, 1]),
+      coloured(new THREE.CapsuleGeometry(0.058, 0.34, 4, 8).translate(0, -0.62, 0), [1, 1, 1]),
+      coloured(new THREE.CapsuleGeometry(0.05, 0.12, 4, 8).rotateX(Math.PI / 2).scale(1.1, 0.8, 1).translate(0, -0.88, 0.05), [0.12, 0.12, 0.13]),
     ])!;
     const mk = (g: THREE.BufferGeometry) => {
       const im = new THREE.InstancedMesh(g, mat, count);

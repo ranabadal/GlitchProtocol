@@ -14,6 +14,7 @@ import type { HeistKey } from "../engine/templates/cityHeist";
 import { BAND_LABELS, RULESET_VERSION, type Band, type GeneratedMission, type GenInputs, type TemplateId } from "../engine/types";
 import { coreIds, COUNTDOWN_MS, courierPos, MAX_TRAVEL_SPEED, TRAVEL_SLACK_MS, type MissionPublic, type Pt, type RobotKind } from "../shared/mission";
 import { checkAchievements } from "./achievements";
+import { roomPlayerFinished, roomProgress, roomEnded } from "./rooms";
 
 /** How long an unstarted briefing stays reserved before it is released. */
 export const BRIEFING_TTL_MS = 30 * 60_000;
@@ -27,9 +28,10 @@ export interface InstanceRow {
   seed: string;
   gen_attempt: number;
   gen_inputs: string;
-  scope: "personal" | "event";
+  scope: "personal" | "event" | "room";
   user_id: string;
   event_id: string | null;
+  room_id: string | null;
   band: Band;
   variant: string;
   fingerprint: string;
@@ -217,6 +219,15 @@ async function refresh(db: DB, inst: InstanceRow): Promise<InstanceRow> {
     await db.prepare(`UPDATE mission_instances SET status = 'abandoned', finished_at = ? WHERE id = ? AND status = 'briefing'`).run(t, inst.id);
     return (await getInstance(db, inst.id))!;
   }
+  if (inst.status === "active" && inst.room_id && (await roomEnded(db, inst.room_id))) {
+    // Someone else won the race: this player's run ends here (points so far still count).
+    await db.transaction(async () => {
+      const fresh = (await getInstance(db, inst.id))!;
+      if (fresh.status !== "active") return;
+      await finishMission(db, fresh, loadState(fresh.state, JSON.parse(fresh.mission_public)), "fail", t);
+    }, `mission:${inst.id}`);
+    return (await getInstance(db, inst.id))!;
+  }
   if (inst.status === "active" && inst.deadline_at !== null && t > inst.deadline_at + SCORING.graceMs) {
     await db.transaction(async () => {
       const fresh = (await getInstance(db, inst.id))!;
@@ -252,7 +263,7 @@ export interface Built {
   attempt: number;
   inputs: GenInputs;
   puzzle: GeneratedMission;
-  scope: "personal" | "event";
+  scope: "personal" | "event" | "room";
   eventId: string | null;
   firstTime: boolean;
   source: string;
@@ -297,6 +308,61 @@ function buildEvent(ev: EventRow): Built {
     throw new HttpError(500, "EVENT_INTEGRITY", "Is event ka mission match nahi ho raha. Operator se naya event banwao.");
   }
   return { seed: ev.seed, attempt: ev.gen_attempt, inputs, puzzle: r.puzzle, scope: "event", eventId: ev.id, firstTime: false, source: "event" };
+}
+
+/** One mission for everyone in a multiplayer room (fresh seed, verified bank as fallback). */
+export function buildRoomMission(band: Band): Built {
+  const template = getTemplate(TEMPLATE)!;
+  const inputs: GenInputs = { band, focusTags: [] };
+  const empty: PlayHistory = { fingerprints: new Map(), recentVariants: [] };
+  const seed = newSeed();
+  try {
+    const sel = selectInstance(template, seed, inputs, empty);
+    return { seed, attempt: sel.attempt, inputs, puzzle: sel.puzzle, scope: "room", eventId: null, firstTime: false, source: sel.status };
+  } catch (err) {
+    if (!(err instanceof GenerationError)) throw err;
+    return { ...buildFromBank(band, empty, false), scope: "room" };
+  }
+}
+
+/** Ends whatever single-player mission this player still has open (a room start takes over). */
+export async function closeOpenMission(db: DB, userId: string): Promise<void> {
+  const open = await db.prepare(`SELECT * FROM mission_instances WHERE user_id = ? AND status IN ('briefing','active')`).get<InstanceRow>(userId);
+  if (!open) return;
+  await db.prepare(`SELECT pg_advisory_xact_lock(hashtext(?))`).get(`mission:${open.id}`);
+  if (open.status === "briefing") {
+    await db.prepare(`UPDATE mission_instances SET status = 'abandoned', finished_at = ? WHERE id = ? AND status = 'briefing'`).run(now(), open.id);
+  } else {
+    await finishMission(db, open, loadState(open.state, JSON.parse(open.mission_public)), "abandoned", now());
+  }
+}
+
+/**
+ * Creates this player's copy of the room's mission, already running: every racer gets the
+ * same city, vaults and puzzles, and the same start time and deadline.
+ */
+export async function createRoomInstance(db: DB, user: UserRow, built: Built, roomId: string, startAt: number): Promise<string> {
+  const template = getTemplate(TEMPLATE)!;
+  const p = built.puzzle;
+  const mission = p.publicPuzzle as MissionPublic;
+  const narrative: Narrative = fallbackNarrative({
+    seed: p.fingerprint, callsign: user.nickname, level: user.level, band: built.inputs.band, focusTags: [], firstTime: false,
+  });
+  const st = initialState(mission);
+  st.anchor.at = startAt;
+  const id = randomUUID();
+  const t = now();
+  await db.prepare(
+    `INSERT INTO mission_instances (id, template_id, template_version, ruleset_version, seed, gen_attempt, gen_inputs, scope, user_id, event_id, room_id,
+       band, variant, fingerprint, tags, mission_public, mission_key, narrative, narrative_source, time_limit_sec, status, state,
+       created_at, started_at, deadline_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'room', ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'fallback', ?, 'active', ?, ?, ?, ?)`,
+  ).run(
+    id, TEMPLATE, template.version, RULESET_VERSION, built.seed, built.attempt, JSON.stringify(built.inputs), user.id, roomId,
+    built.inputs.band, p.variant, p.fingerprint, JSON.stringify(p.tags), JSON.stringify(mission), JSON.stringify(p.answerKey),
+    JSON.stringify(narrative), p.timeLimitSec, JSON.stringify(st), t, startAt, startAt + p.timeLimitSec * 1000,
+  );
+  return id;
 }
 
 export async function startMission(user: UserRow, req: StartRequest): Promise<MissionView> {
@@ -636,6 +702,7 @@ export async function postEvent(user: UserRow, id: string, raw: unknown): Promis
 
     const state = JSON.stringify(st);
     await db.prepare(`UPDATE mission_instances SET state = ?, version = version + 1 WHERE id = ?`).run(state, inst.id);
+    if (inst.room_id) await roomProgress(db, inst.room_id, inst.user_id, runningScore(st), Object.keys(st.picked).length, Object.keys(st.kills).length);
     if (finish) await finishMission(db, (await getInstance(db, inst.id))!, st, finish, t);
     else after = { ...inst, state, version: inst.version + 1 };
   }, `mission:${id}`);
@@ -722,6 +789,7 @@ async function finishMission(db: DB, inst: InstanceRow, st: MissionState, outcom
     });
     if (breakdown.newAchievements.length) await db.prepare(`UPDATE attempts SET score_breakdown = ? WHERE instance_id = ?`).run(JSON.stringify(breakdown), inst.id);
   }
+  if (inst.room_id) await roomPlayerFinished(db, inst.room_id, user.id, outcome, total, breakdown.cores, kills, at);
 }
 
 
@@ -757,8 +825,10 @@ export interface MissionView {
   id: string;
   templateId: TemplateId;
   title: string;
-  mode: "personal" | "event";
+  mode: "personal" | "event" | "room";
   event: { code: string; name: string } | null;
+  /** Multiplayer race this mission belongs to. */
+  room: { code: string; mode: "solo" | "teams" } | null;
   band: Band;
   bandLabel: string;
   status: InstanceRow["status"];
@@ -782,10 +852,11 @@ export async function buildView(db: DB, user: UserRow, inst: InstanceRow): Promi
   const narrative = parseJson<Narrative>(inst.narrative, {} as Narrative);
   // Only read what this mission's status needs (each read is a round trip to the database).
   const live = inst.status === "briefing" || inst.status === "active";
-  const [ev, attempt, failStreak] = await Promise.all([
+  const [ev, attempt, failStreak, room] = await Promise.all([
     inst.event_id ? db.prepare(`SELECT code, name FROM events WHERE id = ?`).get<{ code: string; name: string }>(inst.event_id) : Promise.resolve(undefined),
     live ? Promise.resolve(undefined) : db.prepare(`SELECT * FROM attempts WHERE instance_id = ?`).get<AttemptRow>(inst.id),
     inst.scope === "personal" && inst.status === "briefing" ? recentFailStreak(db, user.id, inst.template_id) : Promise.resolve(0),
+    inst.room_id ? db.prepare(`SELECT code, mode FROM rooms WHERE id = ?`).get<{ code: string; mode: "solo" | "teams" }>(inst.room_id) : Promise.resolve(undefined),
   ]);
 
   let result: MissionResult | null = null;
@@ -825,6 +896,7 @@ export async function buildView(db: DB, user: UserRow, inst: InstanceRow): Promi
     title: getTemplate(inst.template_id)?.title ?? inst.template_id,
     mode: inst.scope,
     event: ev ? { code: ev.code, name: ev.name } : null,
+    room: room ? { code: room.code, mode: room.mode } : null,
     band: inst.band,
     bandLabel: BAND_LABELS[inst.band],
     status: inst.status,

@@ -16,6 +16,8 @@ export const ACHIEVEMENTS = [
   { code: "TITAN_SLAYER", title: "Titan slayer", description: "Ek TITAN robot ko giraao." },
   { code: "TRUCK_STOPPER", title: "Truck stopper", description: "NULL ka data truck tod do." },
   { code: "SHARD_HUNTER", title: "Shard hunter", description: "Ek mission ke saare data shards jama karo." },
+  { code: "RACE_WINNER", title: "Race winner", description: "Multiplayer race sabse pehle jeeto." },
+  { code: "TEAM_WIN", title: "Team player", description: "Team race mein apni team ko jitao." },
 ] as const;
 
 export type AchievementCode = (typeof ACHIEVEMENTS)[number]["code"];

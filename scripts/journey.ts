@@ -228,10 +228,45 @@ async function playRound(round: number): Promise<string[]> {
   return made;
 }
 
+/** Two players on "different laptops": open a room, join by code, race, see each other, finish. */
+async function multiplayerRound(): Promise<void> {
+  const mk = async (tag: string) => {
+    const nick = `mp${tag}${Math.floor(Math.random() * 9e5)}`;
+    const c = new Client(nick);
+    const r = await c.call("POST", "/api/auth/register", { nickname: nick, password: "journey-pass-123", avatarId: "volt" });
+    ok(r.status === 201, `multiplayer: register ${tag}`);
+    return { c, nick };
+  };
+  const a = await mk("a"), b = await mk("b");
+  say("multiplayer: room + join + race");
+  let r = await a.c.call("POST", "/api/rooms", { mode: "solo" });
+  ok(r.status === 200 && /^[A-Z0-9]{5}$/.test(r.data.code), "multiplayer: room created with a code");
+  const code = r.data.code as string;
+  r = await b.c.call("POST", `/api/rooms/${code}/join`, {});
+  ok(r.status === 200 && r.data.players.length === 2, "multiplayer: second player joined by code");
+  r = await b.c.call("POST", `/api/rooms/${code}/start`, {});
+  ok(r.status === 403, "multiplayer: only the host can start");
+  r = await a.c.call("POST", `/api/rooms/${code}/start`, {});
+  ok(r.status === 200 && r.data.status === "playing" && r.data.yourInstanceId, "multiplayer: race started");
+  const ia = r.data.yourInstanceId as string;
+  const ib = (await b.c.call("GET", `/api/rooms/${code}`)).data.yourInstanceId as string;
+  const [ma, mb] = await Promise.all([a.c.call("GET", `/api/missions/${ia}`), b.c.call("GET", `/api/missions/${ib}`)]);
+  ok(JSON.stringify(ma.data.mission) === JSON.stringify(mb.data.mission) && ma.data.startedAt === mb.data.startedAt, "multiplayer: same mission, same start time");
+  await a.c.call("POST", `/api/rooms/${code}/sync`, { pose: { x: 1, y: 0, z: 2, h: 0.5, s: 5, m: "foot", w: "blaster" } });
+  r = await b.c.call("POST", `/api/rooms/${code}/sync`, { pose: { x: 3, y: 0, z: 4, h: 0, s: 0, m: "foot" } });
+  ok(r.status === 200 && r.data.others.length === 1 && r.data.others[0].nickname === a.nick, "multiplayer: players see each other's position");
+  await a.c.call("POST", `/api/missions/${ia}/abort`, {});
+  await b.c.call("POST", `/api/missions/${ib}/abort`, {});
+  r = await a.c.call("GET", `/api/rooms/${code}`);
+  ok(r.data.status === "finished" && r.data.players.every((p: { finished: boolean }) => p.finished), "multiplayer: race over once everyone is done");
+  for (const p of [a, b]) ok((await p.c.call("DELETE", "/api/account", { password: "journey-pass-123" })).status === 200, "multiplayer: test account deleted");
+}
+
 async function main(): Promise<void> {
   const h = await fetch(BASE + "/api/health").then((x) => x.json());
   say(`server ok: ruleset ${h.ruleset}, ${h.players} players, AI ${h.ai.state}`);
   for (let i = 1; i <= ROUNDS; i++) await playRound(i);
+  await multiplayerRound();
   say(`ALL GOOD: ${checks} checks passed in ${ROUNDS} round(s).`);
 }
 

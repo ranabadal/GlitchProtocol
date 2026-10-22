@@ -83,26 +83,28 @@ function carGeometry(v: number): THREE.BufferGeometry {
   return mergeGeometries(parts)!;
 }
 
-function bodyMaterial(): THREE.MeshStandardMaterial {
+function bodyMaterial(uDay: { value: number }): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0.6 });
   m.onBeforeCompile = (s) => {
+    s.uniforms.uDay = uDay;
     s.vertexShader = s.vertexShader
       .replace("#include <common>", "#include <common>\nattribute float aPart; attribute vec2 aState; attribute vec3 aNeon; varying float vPart; varying vec2 vState; varying vec3 vNeon;")
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvPart = aPart; vState = aState; vNeon = aNeon;");
     s.fragmentShader = s.fragmentShader
-      .replace("#include <common>", "#include <common>\nvarying float vPart; varying vec2 vState; varying vec3 vNeon;")
+      .replace("#include <common>", "#include <common>\nvarying float vPart; varying vec2 vState; varying vec3 vNeon; uniform float uDay;")
       .replace("#include <color_fragment>", `#include <color_fragment>
         vec3 gpPaint = diffuseColor.rgb;
         float gpDmg = vState.y;
         int gpP = int(vPart + 0.5);
         vec3 gpEm = vec3(0.0);
-        float gpRough = 0.28, gpMetal = 0.65;
+        // Glossy clear-coated paint: low roughness so it mirrors the sky and buildings.
+        float gpRough = 0.2, gpMetal = 0.55;
         if (gpP == 0) { diffuseColor.rgb = mix(gpPaint, vec3(0.03), gpDmg); }
         else if (gpP == 1) { diffuseColor.rgb = vec3(0.015, 0.02, 0.03); gpRough = 0.08; gpMetal = 0.9; gpEm = vec3(0.02, 0.06, 0.08); }
         else if (gpP == 2) { diffuseColor.rgb = vec3(0.025); gpRough = 0.6; gpMetal = 0.3; }
         else if (gpP == 3) { diffuseColor.rgb = vec3(1.0); gpEm = vec3(3.2, 3.1, 2.8) * (1.0 - gpDmg); }
         else if (gpP == 4) { diffuseColor.rgb = vec3(0.4, 0.0, 0.0); gpEm = vec3(2.4, 0.08, 0.15) * (0.45 + vState.x * 1.6) * (1.0 - gpDmg); }
-        else { diffuseColor.rgb = vNeon * 0.3; gpEm = vNeon * 1.35 * (1.0 - gpDmg); }`)
+        else { diffuseColor.rgb = mix(vNeon * 0.3, vec3(0.03), uDay * 0.8); gpEm = vNeon * 1.35 * (1.0 - gpDmg) * mix(1.0, 0.12, uDay); }`)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\nroughnessFactor = gpRough;")
       .replace("#include <metalnessmap_fragment>", "#include <metalnessmap_fragment>\nmetalnessFactor = gpMetal;")
       .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\ntotalEmissiveRadiance += gpEm;");
@@ -118,7 +120,8 @@ const NEONS = [0x29ffa0, 0x29d9ff, 0xff3aa8, 0xffb229, 0xa86bff].map((h) => new 
 
 // ---------------------------------------------------------------- car state
 
-export type Driver = "ai" | "player" | "none";
+/** "remote": another racer's car, moved by the network (never simulated here). */
+export type Driver = "ai" | "player" | "none" | "remote";
 
 export class Car implements CarLike {
   pos = new THREE.Vector3();
@@ -157,7 +160,7 @@ export class Car implements CarLike {
   get v(): Variant { return VARIANTS[this.variant]; }
 
   takeDamage(amount: number, from: THREE.Vector3): void {
-    if (this.dead) return;
+    if (this.dead || this.driver === "remote") return;
     this.health = Math.max(0, this.health - amount);
     this.onDamage?.(amount, from);
   }
@@ -203,7 +206,7 @@ export class Vehicles {
   headlight: THREE.SpotLight | null = null;
 
   constructor(private world: World, private trafficCount: number, private capacity: number) {
-    const mat = bodyMaterial();
+    const mat = bodyMaterial(world.uDay ?? { value: 0 });
     for (let v = 0; v < VARIANTS.length; v++) {
       const g = carGeometry(v);
       const st = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 2), 2);
@@ -281,6 +284,22 @@ export class Vehicles {
     if (paint) c.paint.copy(paint);
     if (neon) c.neon.copy(neon);
     return c;
+  }
+
+  /** Another racer's car (drawn here, driven on their laptop). */
+  addPuppet(variant: number, paint: THREE.Color, neon: THREE.Color): Car | null {
+    const c = this.makeCar(Math.max(0, Math.min(VARIANTS.length - 1, variant)));
+    if (!c) return null;
+    c.driver = "remote";
+    c.phys = false;
+    c.paint.copy(paint);
+    c.neon.copy(neon);
+    return c;
+  }
+
+  removePuppet(c: Car): void {
+    const i = this.cars.indexOf(c);
+    if (i >= 0) this.cars.splice(i, 1);
   }
 
   /** Fill the streets around a point with traffic and a few parked cars. */
@@ -395,7 +414,7 @@ export class Vehicles {
   nearestEnterable(p: THREE.Vector3, maxD: number): Car | null {
     let best: Car | null = null, bd = maxD;
     for (const c of this.cars) {
-      if (!c.active || c.dead || c.driver === "player") continue;
+      if (!c.active || c.dead || c.driver === "player" || c.driver === "remote") continue;
       const d = Math.hypot(c.pos.x - p.x, c.pos.z - p.z) - c.v.width / 2;
       if (d < bd) { bd = d; best = c; }
     }
@@ -657,7 +676,7 @@ export class Vehicles {
     }
     // Wrecks far away get recycled into traffic.
     for (const c of this.cars) {
-      if (c.dead && c.deadT > 20 && Math.hypot(c.pos.x - L.x, c.pos.z - L.z) > 120) this.respawnAi(c, L.x, L.z, 80, 200, true);
+      if (c.dead && c.driver !== "remote" && c.deadT > 20 && Math.hypot(c.pos.x - L.x, c.pos.z - L.z) > 120) this.respawnAi(c, L.x, L.z, 80, 200, true);
     }
     this.render();
   }

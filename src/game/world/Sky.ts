@@ -32,16 +32,26 @@ export class Sky {
           vec3 top = vec3(0.004, 0.012, 0.012);
           vec3 hor = mix(vec3(0.02, 0.09, 0.07), vec3(0.09, 0.02, 0.04), uCorrupt * 0.6);
           vec3 nightC = mix(hor, top, smoothstep(0.0, 0.55, y));
-          vec3 duskC = mix(vec3(1.0, 0.52, 0.28), vec3(0.16, 0.12, 0.34), smoothstep(-0.02, 0.5, y));
-          vec3 dayC = mix(vec3(0.78, 0.88, 0.97), vec3(0.24, 0.5, 0.9), smoothstep(-0.02, 0.6, y));
+          // Sunset: warm band on the horizon, violet overhead; brighter toward the sun.
+          float towardSun = max(dot(normalize(vec3(vDir.x, 0.0, vDir.z)), normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0);
+          vec3 duskC = mix(mix(vec3(0.95, 0.45, 0.3), vec3(1.15, 0.62, 0.3), towardSun), vec3(0.18, 0.14, 0.36), pow(clamp(y / 0.55, 0.0, 1.0), 0.6));
+          // Day: hazy pale horizon to deep blue zenith (like real atmospheric scattering).
+          vec3 dayC = mix(vec3(0.82, 0.88, 0.94), vec3(0.2, 0.42, 0.82), pow(clamp(y, 0.0, 1.0), 0.5));
+          dayC = mix(dayC, vec3(0.95, 0.93, 0.88), pow(max(dot(vDir, uSunDir), 0.0), 3.0) * 0.35);
           vec3 c = uDay < 0.5 ? mix(nightC, duskC, uDay * 2.0) : mix(duskC, dayC, uDay * 2.0 - 1.0);
           // Sun and soft clouds (day / sunset).
           float sd = max(dot(vDir, uSunDir), 0.0);
           vec3 sunCol = mix(vec3(1.0, 0.55, 0.25), vec3(1.0, 0.95, 0.85), smoothstep(0.5, 1.0, uDay));
           c += sunCol * (smoothstep(0.9995, 0.9998, sd) * 3.0 + pow(sd, 60.0) * 0.6 + pow(sd, 6.0) * 0.12) * (1.0 - night);
           vec2 cp = vDir.xz / (vDir.y + 0.25) * 2.2 + vec2(uTime * 0.01, 0.0);
-          float cl = smoothstep(0.55, 0.85, vn(cp) * 0.65 + vn(cp * 2.3) * 0.35) * smoothstep(0.02, 0.25, y);
-          c = mix(c, mix(vec3(1.0, 0.75, 0.6), vec3(1.0), smoothstep(0.5, 1.0, uDay)), cl * 0.55 * (1.0 - night));
+          float dens = vn(cp) * 0.55 + vn(cp * 2.3) * 0.3 + vn(cp * 6.1) * 0.15;
+          float cl = smoothstep(0.52, 0.8, dens) * smoothstep(0.02, 0.25, y);
+          // Clouds: bright sunlit tops, grey bellies, silver lining near the sun.
+          float shade = smoothstep(0.55, 0.95, dens);
+          vec3 cloudLit = mix(vec3(1.0, 0.72, 0.55), vec3(1.0, 0.99, 0.97), smoothstep(0.5, 1.0, uDay));
+          vec3 cloudDark = mix(vec3(0.45, 0.3, 0.38), vec3(0.62, 0.66, 0.72), smoothstep(0.5, 1.0, uDay));
+          vec3 cloudC = mix(cloudLit, cloudDark, shade * 0.75) + vec3(1.0, 0.9, 0.75) * pow(sd, 8.0) * 0.6;
+          c = mix(c, cloudC, cl * 0.8 * (1.0 - night));
           // stars
           vec2 sp = vDir.xz / (vDir.y + 1.2) * 180.0;
           float s = step(0.997, h(floor(sp))) * smoothstep(0.1, 0.5, y);

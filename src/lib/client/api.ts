@@ -2,6 +2,7 @@
 
 import type { MePayload } from "@/lib/services/users";
 import type { MissionView, EventOutcome } from "@/lib/services/missions";
+import type { Pose, RemotePose, RoomView } from "@/lib/services/rooms";
 
 /*
  * Browser-side API helper. Every call goes to this app's own server (same origin);
@@ -45,6 +46,8 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown;
 export type Me = MePayload;
 export type Mission = MissionView & { outcome?: EventOutcome };
 export type { EventOutcome, MissionView };
+export type Room = RoomView;
+export type { Pose, RemotePose };
 
 export const getMe = () => api<Me>("/api/me");
 export const logout = () => api<{ ok: true }>("/api/auth/logout", { method: "POST", json: {} });

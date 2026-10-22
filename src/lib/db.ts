@@ -230,6 +230,51 @@ const MIGRATIONS: string[] = [
     window_start BIGINT NOT NULL
   );
   `,
+  /* 2: multiplayer rooms (race / team race on the same mission) */ `
+  CREATE TABLE rooms (
+    id            TEXT PRIMARY KEY,
+    code          TEXT NOT NULL UNIQUE,
+    host_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mode          TEXT NOT NULL CHECK (mode IN ('solo','teams')),
+    status        TEXT NOT NULL CHECK (status IN ('lobby','playing','finished','closed')),
+    band          BIGINT NOT NULL,
+    started_at    BIGINT,
+    deadline_at   BIGINT,
+    winner_user   TEXT,
+    winner_team   TEXT,
+    finish_reason TEXT,
+    created_at    BIGINT NOT NULL,
+    updated_at    BIGINT NOT NULL,
+    finished_at   BIGINT
+  );
+  CREATE INDEX idx_rooms_status ON rooms(status, updated_at);
+
+  -- One row per player in a room. Live progress (score, cores) is copied here on every
+  -- mission event so the scoreboard is one cheap read; the pose columns carry each
+  -- player's position for the other players' screens.
+  CREATE TABLE room_players (
+    room_id     TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    team        TEXT,
+    joined_at   BIGINT NOT NULL,
+    instance_id TEXT,
+    score       BIGINT NOT NULL DEFAULT 0,
+    cores       BIGINT NOT NULL DEFAULT 0,
+    kills       BIGINT NOT NULL DEFAULT 0,
+    finished_at BIGINT,
+    outcome     TEXT,
+    pose        TEXT,
+    pose_at     BIGINT,
+    seen_at     BIGINT,
+    PRIMARY KEY (room_id, user_id)
+  );
+  CREATE INDEX idx_room_players_user ON room_players(user_id);
+
+  ALTER TABLE mission_instances ADD COLUMN room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL;
+  ALTER TABLE mission_instances DROP CONSTRAINT mission_instances_scope_check;
+  ALTER TABLE mission_instances ADD CONSTRAINT mission_instances_scope_check CHECK (scope IN ('personal','event','room'));
+  CREATE UNIQUE INDEX uq_one_room_instance ON mission_instances(user_id, room_id) WHERE room_id IS NOT NULL;
+  `,
 ];
 
 

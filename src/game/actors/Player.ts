@@ -6,7 +6,7 @@ import { clamp, damp, dampAngle, wrapAngle } from "../mathx";
 import { DEFAULT_SETTINGS, type GameSettings } from "../Settings";
 import type { Fences } from "../world/MissionProps";
 import { panFor, type PlayerLike, type World } from "../World";
-import { OperatorRig } from "./Humanoid";
+import { makeRig, type CharacterRig, type SoldierTemplate } from "./Character";
 import type { Heli, Metro, Station } from "./Rides";
 import type { HitBy, Robot, Robots } from "./Robots";
 import type { Car, Vehicles } from "./Vehicles";
@@ -42,7 +42,8 @@ const BOMB = { max: 3, recharge: 9, fuse: 1.5, radius: 8, damage: 170, every: 0.
 const BLADE = { every: 0.34, damage: 55, finisher: 95, reach: 2.9, cone: 0.9 };
 const SLAP = { every: 0.65, damage: 25, reach: 2.4 };
 const STAMINA = { drain: 20, regen: 28, rollCost: 26 };
-const RUN_SPEED = 10.8, JOG_SPEED = 6.6;
+/** Sprint (Shift) and the normal running pace. */
+const RUN_SPEED = 10.2, JOG_SPEED = 6.2;
 
 /** Anything else the player's weapons can hit (the data truck). */
 export interface HitTarget {
@@ -83,7 +84,7 @@ export class Player implements PlayerLike {
   lastHurtAt = -99;
   frozen = false;
   hacking = false;
-  rig: OperatorRig;
+  rig: CharacterRig;
   glow: THREE.Color;
   settings: GameSettings = { ...DEFAULT_SETTINGS };
   weapon: WeaponId = "blaster";
@@ -129,12 +130,15 @@ export class Player implements PlayerLike {
   private bombGeo = new THREE.IcosahedronGeometry(0.16, 1);
   private bombMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 2.8, 2.3), toneMapped: false });
   carEnteredAt = -99;
+  /** True while Shift-sprinting this frame. */
+  sprinting = false;
+  private stepPhase = 0;
 
   /** Laser fences the blaster can hit (set by the game once the mission is built). */
   fences: Fences | null = null;
 
-  constructor(private world: World, private vehicles: Vehicles, private robots: Robots, hue: number, private rides: { helis: Heli[]; metro: Metro | null } = { helis: [], metro: null }) {
-    this.rig = new OperatorRig(hue);
+  constructor(private world: World, private vehicles: Vehicles, private robots: Robots, hue: number, private rides: { helis: Heli[]; metro: Metro | null } = { helis: [], metro: null }, character: SoldierTemplate | null = null) {
+    this.rig = makeRig(character, hue);
     this.glow = new THREE.Color().setHSL(hue / 360, 1, 0.6);
     world.scene.add(this.rig.root);
   }
@@ -314,6 +318,17 @@ export class Player implements PlayerLike {
     if (this.pos.y <= 0) { this.pos.y = 0; this.vel.y = 0; this.grounded = true; }
     if (this.grounded && !this.wasGrounded) { w.sound.land(); w.fx.dust(this.pos, 4); }
     this.wasGrounded = this.grounded;
+    // Footsteps (and dust kicked up when sprinting), in time with the stride.
+    const hs = Math.hypot(this.vel.x, this.vel.z);
+    if (this.grounded && hs > 1.5 && this.rollT < 0) {
+      this.stepPhase += dt * (hs > 7.5 ? 3.0 : hs > 2.5 ? 2.7 : 1.9);
+      if (this.stepPhase >= 1) {
+        this.stepPhase -= 1;
+        w.sound.step(sprint);
+        if (sprint) w.fx.dust(this.pos, 1);
+      }
+    }
+    this.sprinting = sprint;
 
     // Collisions: world, then cars.
     const res = w.colliders.resolveCircle(this.pos.x, this.pos.z, RADIUS, this.pos.y, HEIGHT);

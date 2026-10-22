@@ -51,6 +51,8 @@ export interface World {
   sound: Sound;
   q: QualitySettings;
   uTime: { value: number };
+  /** 0 = night, 0.5 = sunset, 1 = day (shared with the city shaders). */
+  uDay?: { value: number };
   /** Game time in seconds (stops while paused, slows during hacks). */
   time: number;
   attract: boolean;

@@ -130,6 +130,8 @@ export interface HudState {
   heroLine: { text: string; at: number } | null;
   shards: { got: number; total: number } | null;
   opTitle: string;
+  /** Other racers (multiplayer), for the minimap. */
+  racers: { id: string; name: string; color: string; x: number; z: number; heading: number }[];
 }
 
 export interface GameCallbacks {

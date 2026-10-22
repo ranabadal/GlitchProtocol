@@ -6,7 +6,7 @@ import { TopBar, useMe } from "@/components/Shell";
 const CONTROLS: [string, string][] = [
   ["W A S D / Arrows", "Chalo, gaadi chalao, helicopter udao"], ["Mouse", "Camera ghumao, nishana lagao"], ["Left click", "Haath ka weapon chalao"],
   ["Right click", "Aim / zoom"], ["1 2 3 4 / wheel", "Blaster · Scatter gun · Plasma bomb · Energy blade"], ["V", "Thappad! Robot ud jaata hai (koi bhi weapon ho)"],
-  ["Shift", "Daudo (stamina), gaadi mein nitro, heli neeche"], ["Space", "Jump, handbrake (drift!), heli upar"], ["C", "Dodge roll: goliyon se bacho"],
+  ["Shift (dabake rakho)", "Tez daudo / sprint (stamina), gaadi mein nitro, heli neeche"], ["Space", "Jump, handbrake (drift!), heli upar"], ["C", "Dodge roll: goliyon se bacho"],
   ["F", "Gaadi / helicopter / Skyline Metro mein baitho ya utro"], ["E", "Vault terminal hack karo"], ["Q", "EMP blast: paas ke robots ruk jaate hain, drones gir jaate hain"],
   ["M / Tab", "Pura map"], ["H", "Horn"], ["Esc", "Pause + settings (Din/Shaam/Raat, mouse speed, awaazein)"],
 ];
@@ -57,6 +57,22 @@ export default function Rules() {
               <div className="stack" style={{ gap: 12 }}>
                 {HACKS.map((h) => <div key={h.t}><b style={{ fontFamily: "var(--font-head)" }}>{h.t}</b> <span className="chip">{h.s}</span><p className="muted" style={{ margin: "4px 0 0" }}>{h.d}</p></div>)}
               </div>
+            </div>
+          </div>
+          <div className="panel cyan rise" style={{ animationDelay: "0.12s" }}>
+            <div className="panel-title" style={{ color: "var(--cyan)" }}>Multiplayer race (dosto ke saath)</div>
+            <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 }}>
+              {[
+                ["1. Room banao", "Hub mein Solo race (2–4 players) ya Team race (Team A vs Team B) dabao. Ek 5 letter ka code milega."],
+                ["2. Dost join karein", "Dusre laptops pe login karke Hub → Join room mein code daalo. Team race mein apni team chuno."],
+                ["3. Race!", "Host START dabata hai. Sabko same mission milta hai, sab ek doosre ko city mein dekhte hain (naam ke saath)."],
+                ["4. Jeeto", "Solo: jo sabse pehle upload complete kare wo jeeta. Team: sab members ke points jud ke, pehle finish karne wale ki team ko +1000."],
+              ].map(([t, d]) => (
+                <div key={t} style={{ padding: 12, border: "1px solid var(--line)", background: "rgba(0,0,0,0.3)" }}>
+                  <b style={{ fontFamily: "var(--font-head)", fontSize: 17 }}>{t}</b>
+                  <p className="muted" style={{ margin: "6px 0 0", fontSize: 15 }}>{d}</p>
+                </div>
+              ))}
             </div>
           </div>
           <div className="panel rise" style={{ animationDelay: "0.14s" }}>

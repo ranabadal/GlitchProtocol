@@ -8,11 +8,14 @@ import { HackOverlay, type Answer } from "@/components/game/HackOverlay";
 import { Hud } from "@/components/game/Hud";
 import { cityImage, drawMarker, toMap, MAP_PX } from "@/components/game/mapDraw";
 import { BigMap, Minimap } from "@/components/game/Minimap";
+import { RaceBoard } from "@/components/game/RaceBoard";
 import { Results } from "@/components/game/Results";
+import { Standings } from "@/components/game/Standings";
 import type { Game } from "@/game/Game";
 import { BridgeError, type HackRequest, type HackVerdict, type HudState, type MissionBridge, type QualityLevel, type Sync } from "@/game/types";
 import type { GameSettings, LightMode } from "@/game/Settings";
-import { api, ApiError, getMe, type Me, type Mission } from "@/lib/client/api";
+import { api, ApiError, getMe, type Me, type Mission, type RemotePose, type Room } from "@/lib/client/api";
+import { racerColor } from "@/lib/shared/room";
 import { coreIds, OP_INFO } from "@/lib/shared/mission";
 import "../play.css";
 
@@ -56,6 +59,11 @@ function PlayScreen({ id }: { id: string }) {
   const [quality, setQuality] = useState<QualityLevel>("medium");
   const [settings, setSettings] = useState<GameSettings | null>(null);
   const [aiStory, setAiStory] = useState<"idle" | "loading" | "done">("idle");
+  const [race, setRace] = useState<Room | null>(null);
+  const [raceOver, setRaceOver] = useState(false);
+  const [sprintHint, setSprintHint] = useState(false);
+  const raceOverRef = useRef(false);
+  const roomCode = mission?.room?.code ?? null;
 
   const setPhase = (p: Phase) => { phaseRef.current = p; setPhaseState(p); };
   const serverNow = useCallback(() => Date.now() + offsetRef.current, []);
@@ -270,6 +278,48 @@ function PlayScreen({ id }: { id: string }) {
     resolve({ ...v, sync: hackSync.current ?? { score: hudRef.current?.score ?? 0, lives: hudRef.current?.lives ?? 3, status: "active" } });
   }, [hack]);
 
+  // ------------------------------------------------------------ multiplayer race
+
+  // Several times a second: send where I am, get everyone else + the live scoreboard.
+  useEffect(() => {
+    if (!roomCode || (phase !== "playing" && phase !== "finishing" && phase !== "results")) return;
+    const playing = phase === "playing";
+    let stop = false, busy = false, lastUi = 0;
+    const colors = new Map<string, string>();
+    const tick = async () => {
+      if (stop || busy) return;
+      busy = true;
+      try {
+        const pose = playing ? gameRef.current?.netPose() ?? null : null;
+        const r = await api<{ room: Room; others: RemotePose[] }>(`/api/rooms/${roomCode}/sync`, { method: "POST", json: pose ? { pose } : {}, timeoutMs: 4000 });
+        r.room.players.forEach((p, i) => colors.set(p.userId, racerColor(p.team, i)));
+        if (playing) gameRef.current?.setRemotes(r.others, r.room.serverNow, (uid) => colors.get(uid) ?? "#ffffff");
+        if (Date.now() - lastUi > 450 || r.room.status !== "playing") { lastUi = Date.now(); setRace(r.room); }
+        if (r.room.status === "finished" && playing && !raceOverRef.current) {
+          raceOverRef.current = true;
+          // Someone else won (or time ran out): show who, then go to the results.
+          if (!finishedRef.current) {
+            setRaceOver(true);
+            gameRef.current?.setPaused(true);
+            setTimeout(() => { setRaceOver(false); void finish(); }, 3200);
+          }
+        }
+      } catch { /* the next tick tries again */ } finally { busy = false; }
+    };
+    void tick();
+    const t = setInterval(tick, playing ? 200 : 2000);
+    return () => { stop = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomCode, phase]);
+
+  // First few seconds of a mission: remind everyone that Shift makes you sprint.
+  useEffect(() => {
+    if (phase !== "playing" || !ready) return;
+    const on = setTimeout(() => setSprintHint(true), 4500);
+    const off = setTimeout(() => setSprintHint(false), 14000);
+    return () => { clearTimeout(on); clearTimeout(off); };
+  }, [phase, ready]);
+
   // Keyboard: map, pause.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -311,7 +361,24 @@ function PlayScreen({ id }: { id: string }) {
 
       {phase === "briefing" && mission && <Briefing mission={mission} me={me} ready={ready} starting={starting} aiStory={aiStory} onStart={begin} />}
 
-      {playing && hud && hud.mode !== "intro" && <Hud hud={hud} title={mission?.narrative.title ?? "Mission"} minimap={minimap} />}
+      {playing && hud && hud.mode !== "intro" && <Hud hud={hud} title={mission?.narrative.title ?? "Mission"} minimap={minimap} race={race && race.status !== "lobby" ? <RaceBoard room={race} /> : null} />}
+      {playing && sprintHint && hud?.mode === "foot" && <div className="sprint-hint"><span className="kbd">Shift</span> dabake rakho = tez daudo · <span className="kbd">C</span> = roll</div>}
+      {playing && mission?.room && countdown !== null && countdown > 3 && (
+        <div className="race-intro">
+          <div className="glitch" data-text={mission.room.mode === "teams" ? "TEAM RACE" : "MULTIPLAYER RACE"}>{mission.room.mode === "teams" ? "TEAM RACE" : "MULTIPLAYER RACE"}</div>
+          <div className="hud-card">
+            <div className="hud-label">{OP_INFO[mission.mission.op ?? "classic"].title}</div>
+            <div style={{ fontSize: 16, margin: "4px 0 8px" }}>{mission.room.mode === "teams" ? "Team ke saath points jodo. Jo sabse pehle upload complete kare, uski team ko +1000!" : "Saare vaults se cores lo aur upload karo. Jo pehle kare, wahi jeete!"}</div>
+            {race && <div className="row wrap" style={{ gap: 6 }}>{race.players.map((p, i) => <span key={p.userId} className="chip" style={{ color: racerColor(p.team, i), borderColor: racerColor(p.team, i) }}>{p.nickname}{p.online ? "" : " · loading"}</span>)}</div>}
+          </div>
+        </div>
+      )}
+      {raceOver && race?.winner && (
+        <div className="race-over">
+          <div className="glitch" data-text="RACE KHATAM">RACE KHATAM</div>
+          <p style={{ fontSize: 22, fontFamily: "var(--font-head)" }}>{race.mode === "teams" ? (race.winner.team ? `Team ${race.winner.team} jeet gayi!` : "Barabari!") : race.winner.nickname ? `${race.winner.nickname} jeet gaya!` : "Barabari!"}</p>
+        </div>
+      )}
       {playing && countdown !== null && countdown > 0 && <div className="countdown" key={countdown}>{countdown}</div>}
       {playing && hud && hud.mode !== "intro" && hud.timeLeft !== null && hud.timeLeft > hud.timeLimit - 1.6 && <div className="go-banner">GO!</div>}
       {playing && hud?.mode === "dead" && (
@@ -369,7 +436,7 @@ function PlayScreen({ id }: { id: string }) {
         </div>
       )}
 
-      {phase === "results" && mission?.result && <Results mission={mission} onNext={nextMission} busy={nextBusy} />}
+      {phase === "results" && mission?.result && <Results mission={mission} onNext={mission.room ? () => router.push("/hub") : nextMission} busy={nextBusy} race={mission.room && race ? <div className="results-race">{race.status === "finished" ? <Standings room={race} /> : <><div className="hud-label">Race chal rahi hai</div><RaceBoard room={race} /></>}</div> : null} />}
 
       {error && (
         <div className="play-error">
@@ -476,7 +543,7 @@ function Briefing({ mission, me, ready, starting, aiStory, onStart }: { mission:
 function Controls({ compact = false }: { compact?: boolean }) {
   const rows: [string, string][] = [
     ["W A S D", "chalo / gaadi chalao"], ["Mouse", "nishana / camera"], ["Left click", "fire / vaar"], ["Right click", "aim (zoom)"],
-    ["Shift", "daudo / nitro / heli neeche"], ["Space", "jump / handbrake / heli upar"], ["C", "dodge roll"], ["V", "thappad (slap)!"],
+    ["Shift", "tez daudo (sprint) / nitro / heli neeche"], ["Space", "jump / handbrake / heli upar"], ["C", "dodge roll"], ["V", "thappad (slap)!"],
     ["1 2 3 4", "Blaster · Scatter · Bomb · Blade"], ["Mouse wheel", "weapon badlo"], ["F", "gaadi / helicopter / metro"], ["E", "terminal hack"],
     ["Q", "EMP blast"], ["M / Tab", "bada map"], ["H", "horn"], ["Esc", "pause + settings"],
   ];

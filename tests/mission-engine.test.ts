@@ -587,9 +587,12 @@ describe("mission variety: Titan Hunt, Data Truck Chase, Blitz and data shards",
     const c = m.courier!;
     await expect(postEvent(u, v.id, { type: "pickup", vault: c.id })).rejects.toThrowError(/Truck/);
     // Reporting a kill from the far side of the city is refused.
-    const far = await postEvent(u, v.id, { type: "kill", robots: [c.id] });
+    // (Only when the truck really is far away: if it happens to start near the safehouse the kill would count.)
     const d0 = Math.hypot(courierPos(c, 0.1).x - m.start.x, courierPos(c, 0.1).z - m.start.z);
-    if (d0 > 60 + 52 * 2.6) expect(far.outcome.rejected![0].reason).toMatch(/too far/);
+    if (d0 > 60 + 52 * 2.6) {
+      const far = await postEvent(u, v.id, { type: "kill", robots: [c.id] });
+      expect(far.outcome.rejected![0].reason).toMatch(/too far/);
+    }
     // Do everything else first: the upload still refuses without the truck's core.
     const done = await playStarted(u.id, v.id, { ...m, courier: null }, { skipUplink: true }, v.startedAt!);
     expect(done.progress.picked).toHaveLength(m.vaults.length);

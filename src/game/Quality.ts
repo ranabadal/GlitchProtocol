@@ -17,12 +17,20 @@ export interface QualitySettings {
   rainParticles: number;
   farClip: number;
   lights: boolean;
+  /** Shadow map resolution (0 = no shadows). */
+  shadowSize: number;
+  /** Half-size of the sun's shadow area around the player, metres. */
+  shadowRange: number;
+  fxaa: boolean;
+  /** Screen-space ambient occlusion. */
+  ao: boolean;
 }
 
 export const QUALITY: Record<QualityLevel, QualitySettings> = {
-  low: { level: "low", pixelRatio: 0.75, antialias: false, bloom: false, shadows: false, crowd: 14, traffic: 9, rainParticles: 500, farClip: 360, lights: false },
-  medium: { level: "medium", pixelRatio: 1, antialias: false, bloom: true, shadows: false, crowd: 26, traffic: 15, rainParticles: 1200, farClip: 460, lights: true },
-  high: { level: "high", pixelRatio: 1.5, antialias: true, bloom: true, shadows: true, crowd: 40, traffic: 22, rainParticles: 2200, farClip: 560, lights: true },
+  low: { level: "low", pixelRatio: 0.75, antialias: false, bloom: false, shadows: false, crowd: 14, traffic: 9, rainParticles: 500, farClip: 360, lights: false, shadowSize: 0, shadowRange: 0, fxaa: false, ao: false },
+  // Normal laptops: real sun shadows near the player and edge smoothing; no AO.
+  medium: { level: "medium", pixelRatio: 1, antialias: false, bloom: true, shadows: true, crowd: 26, traffic: 15, rainParticles: 1200, farClip: 520, lights: true, shadowSize: 2048, shadowRange: 55, fxaa: true, ao: false },
+  high: { level: "high", pixelRatio: 1.5, antialias: true, bloom: true, shadows: true, crowd: 40, traffic: 22, rainParticles: 2200, farClip: 640, lights: true, shadowSize: 4096, shadowRange: 75, fxaa: true, ao: true },
 };
 
 const KEY = "gp-quality";

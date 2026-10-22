@@ -161,6 +161,13 @@ export class Sound {
   }
   slapMiss(): void { this.noise(0.12, { vol: 0.1, freq: 1200, type: "bandpass", q: 1 }); }
   roll(): void { this.noise(0.28, { vol: 0.09, freq: 900, slide: 300 }); }
+  /** Footstep on pavement: a short soft thud with a little grit (louder when sprinting). */
+  step(sprint: boolean): void {
+    if (!this.throttle("step", 160)) return;
+    const v = sprint ? 0.06 : 0.035;
+    this.noise(0.05, { vol: v, freq: 180 + Math.random() * 80 });
+    this.noise(0.03, { vol: v * 0.5, freq: 2400 + Math.random() * 900, type: "bandpass", q: 2 });
+  }
   land(): void { if (this.throttle("land", 200)) this.noise(0.1, { vol: 0.09, freq: 260 }); }
   weaponSwitch(): void { this.tone(1400, 0.03, { type: "square", vol: 0.04 }); this.tone(900, 0.04, { type: "square", vol: 0.03, at: 0.04 }); }
   empty(): void { if (this.throttle("empty", 300)) this.tone(260, 0.06, { type: "square", vol: 0.04 }); }

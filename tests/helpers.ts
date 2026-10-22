@@ -17,7 +17,7 @@ let counter = 0;
  * pass persistent=true for an on-disk one, so a server restart can be simulated by reopening it.
  */
 let shared: DB | null = null;
-const TABLES = "users, sessions, skill_state, events, mission_instances, attempts, achievements, ai_cache, counters";
+const TABLES = "users, sessions, skill_state, events, rooms, room_players, mission_instances, attempts, achievements, ai_cache, counters";
 /** Run the suites against a real Postgres server instead: TEST_DATABASE_URL=postgres://... npx vitest run --no-file-parallelism */
 const PG_URL = process.env.TEST_DATABASE_URL?.trim() || null;
 

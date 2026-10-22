@@ -20,10 +20,10 @@ const HEAD: Record<string, [string, string]> = {
 const BADGES: Record<string, string> = {
   FIRST_CLEAR: "City online", FLAWLESS: "Flawless", HACKERMAN: "Hackerman", SCRAPYARD: "Scrapyard", SPEED_DEMON: "Speed demon",
   ALL_HACKS: "Triple threat", AGENT: "Agent rank", LEGEND: "Legend", COMEBACK: "Comeback", EVENT_PLAYER: "Event player",
-  TITAN_SLAYER: "Titan slayer", TRUCK_STOPPER: "Truck stopper", SHARD_HUNTER: "Shard hunter",
+  TITAN_SLAYER: "Titan slayer", TRUCK_STOPPER: "Truck stopper", SHARD_HUNTER: "Shard hunter", RACE_WINNER: "Race winner", TEAM_WIN: "Team player",
 };
 
-export function Results({ mission, onNext, busy }: { mission: Mission; onNext: () => void; busy: boolean }) {
+export function Results({ mission, onNext, busy, race }: { mission: Mission; onNext: () => void; busy: boolean; race?: React.ReactNode }) {
   const r = mission.result!;
   const b = r.breakdown as Record<string, number> & { stars: number; newAchievements: string[]; bandChange?: string };
   const [fb, setFb] = useState<{ headline: string; feedback: string; next_tip: string; source: string } | null>(r.feedback?.source === "fallback" ? null : r.feedback);
@@ -39,7 +39,7 @@ export function Results({ mission, onNext, busy }: { mission: Mission; onNext: (
     return () => { live = false; };
   }, [mission.id, r.feedback, r.outcome]);
 
-  const [head, color] = HEAD[r.outcome] ?? HEAD.fail;
+  const [head, color] = mission.room ? (r.outcome === "success" ? ["MISSION COMPLETE", "var(--green)"] : r.outcome === "abandoned" ? HEAD.abandoned : ["RACE KHATAM", "var(--amber)"]) : HEAD[r.outcome] ?? HEAD.fail;
   const rows: [string, string, number][] = [
     ["Data cores", `${b.cores}/${b.coresTotal}`, b.corePoints],
     ["Hacks", `${b.hacksFirstTry} pehli try mein`, b.hackPoints],
@@ -57,6 +57,7 @@ export function Results({ mission, onNext, busy }: { mission: Mission; onNext: (
           <h1 className="glitch" data-text={head} style={{ fontSize: "clamp(36px, 6vw, 64px)", color }}>{head}</h1>
           <div className="stars">{[0, 1, 2].map((i) => <span key={i} className={i < b.stars ? "on" : ""}>★</span>)}</div>
         </div>
+        {race}
         <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 22 }}>
           <div>
             <table className="board">
@@ -91,6 +92,7 @@ export function Results({ mission, onNext, busy }: { mission: Mission; onNext: (
         </div>
         <div className="row wrap" style={{ marginTop: 22, gap: 12 }}>
           {mission.mode === "personal" && <button className="btn primary big" onClick={onNext} disabled={busy}>{busy ? "Mission ban raha hai..." : "▶ Agla mission"}</button>}
+          {mission.mode === "room" && <button className="btn primary big" onClick={onNext}>▶ Nayi race (Hub)</button>}
           <Link className="btn big cyan" href="/hub">Hub</Link>
           <Link className="btn big amber" href="/leaderboard">Leaderboard</Link>
         </div>

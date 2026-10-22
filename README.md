@@ -16,6 +16,7 @@ Built for a school science fair (classes 5–12): Hinglish text, keyboard + mous
 | Get past hurdles | Barricaded roads (find another way), laser fences (shoot a pylon to drop them), alarm squads, robot patrols |
 | Hack vaults | The three original challenge types as quick hologram hacks: **Data Stream Breach** (Pattern Breaker), **Firewall Bypass** (System Override), **Identity Scan** (Spot the Contradiction) |
 | Finish the mission | Carry every core to the uplink tower and stay in the ring while the upload completes |
+| **Play together** | **Multiplayer race** on separate laptops: one player opens a room and shares the 5-letter code. **Solo race** (2–4 players): everyone gets the same mission, sees the others running and driving around the city with name tags, and whoever finishes first wins. **Team race** (Team A vs Team B, up to 4 each): team score = everyone's points, the first finisher's team gets +1000. Live scoreboard on screen |
 
 ---
 
@@ -100,6 +101,7 @@ If you add Supabase through Vercel's Supabase integration instead, it sets `POST
 
 These commands work while the game is running — run them in a second terminal. (The built-in database can only be open in one program, so they pass the command to the running game server automatically.)
 6. **If the internet/AI goes down:** nothing to do. Missions, scoring and leaderboards never wait on the AI.
+7. **Multiplayer at the stall:** every laptop opens the same game address (your computer's address on the Wi-Fi, or your online link) and logs in with its own account. One player clicks **Hub → Solo race / Team race**, the others type the room code in **Join room**, and the host presses **RACE START KARO**. Everyone starts together about 15 seconds later (time for each laptop to load the city).
 
 ## 5. How a mission is made (and why it's fair)
 
@@ -149,7 +151,7 @@ The mission-engine tests cover the required checks: different valid missions for
 | Right click | Aim / zoom |
 | 1 2 3 4 / mouse wheel | Blaster · Scatter gun · Plasma bomb · Energy blade |
 | V | Slap whatever is in front of you (any weapon) |
-| Shift | Run (stamina bar) / car nitro / helicopter down |
+| Shift (hold) | Sprint — the fastest way on foot (uses the stamina bar) / car nitro / helicopter down |
 | Space | Jump / handbrake / helicopter up |
 | C | Dodge roll (most bolts miss you mid-roll) |
 | F | Get in or out of a car, a helicopter or the Skyline Metro |
@@ -202,5 +204,6 @@ Offline mode keeps everything (players, missions, photos) in `data/pglite/`, whi
 ## Credits
 
 - Robot model “RobotExpressive” by Tomás Laulhé (Quaternius), modified by Don McCurdy — CC0 1.0. See `public/models/CREDITS.txt`.
+- Player character “Vanguard” with idle/walk/run animations from Adobe Mixamo (as shipped in the three.js examples). See `public/models/CREDITS.txt`.
 - Fonts: Oxanium, Rajdhani, Share Tech Mono (SIL Open Font License) via Fontsource.
-- Everything else — city, cars, people, drones, turrets, signs, effects, music and sound — is generated in code.
+- Everything else — city, cars, pedestrians, drones, turrets, signs, effects, music and sound — is generated in code.

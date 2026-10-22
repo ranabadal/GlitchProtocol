@@ -48,16 +48,17 @@ export interface LightPreset {
 
 export const LIGHTS: Record<LightMode, LightPreset> = {
   day: {
-    day: 1, hemiSky: 0xd8ecff, hemiGround: 0x6d665c, hemi: 1.55,
-    sun: 0xfff3dd, sunI: 2.7, sunPos: [90, 170, -70],
-    fog: 0xb9d2e4, fogDensity: 0.0021, fogDensityLow: 0.0034,
-    exposure: 1.0, env: 0.9, bloomStrength: 0.28, bloomThreshold: 1.55,
+    // Strong sun + soft sky light from the environment map: real contrast and shadows.
+    day: 1, hemiSky: 0xcfe3ff, hemiGround: 0x5a554d, hemi: 0.6,
+    sun: 0xfff1dc, sunI: 3.4, sunPos: [95, 150, -80],
+    fog: 0xbcd0e0, fogDensity: 0.0016, fogDensityLow: 0.0028,
+    exposure: 0.95, env: 1.0, bloomStrength: 0.22, bloomThreshold: 1.6,
   },
   dusk: {
-    day: 0.5, hemiSky: 0xffc39a, hemiGround: 0x3a3048, hemi: 1.05,
-    sun: 0xffa266, sunI: 1.9, sunPos: [140, 55, -110],
-    fog: 0x8a6f86, fogDensity: 0.0029, fogDensityLow: 0.0045,
-    exposure: 1.05, env: 0.7, bloomStrength: 0.42, bloomThreshold: 1.05,
+    day: 0.5, hemiSky: 0xffb48a, hemiGround: 0x3a3048, hemi: 0.55,
+    sun: 0xff9a55, sunI: 3.0, sunPos: [150, 48, -110],
+    fog: 0x9a7a88, fogDensity: 0.0024, fogDensityLow: 0.004,
+    exposure: 1.0, env: 0.85, bloomStrength: 0.4, bloomThreshold: 1.1,
   },
   night: {
     day: 0, hemiSky: 0x2a4258, hemiGround: 0x07090c, hemi: 0.7,

@@ -192,3 +192,21 @@ table.board tr.you td { background: rgba(60, 255, 154, 0.08); }
 @media (prefers-reduced-motion: reduce) {
   .glitch::before, .glitch::after, .rise, .skeleton { animation: none; }
 }
+
+/* ---------------------------------------------------------------- multiplayer lobby */
+.room-page .hud-label, .mp-panel .hud-label { font-family: var(--font-head); font-size: 11px; letter-spacing: 0.24em; color: var(--green); text-transform: uppercase; }
+.room-code-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; margin: 18px 0 22px; padding: 18px 22px; border: 1px dashed var(--line-strong); background: rgba(0, 0, 0, 0.35); }
+.room-code { font-size: clamp(44px, 8vw, 76px); font-weight: 800; letter-spacing: 0.22em; color: var(--green); text-shadow: 0 0 24px rgba(60, 255, 154, 0.6); line-height: 1.05; }
+.team-col { padding: 14px; border: 1px solid; border-left-width: 4px; background: rgba(0, 0, 0, 0.3); }
+.player-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-left-width: 4px; background: rgba(0, 0, 0, 0.35); min-height: 66px; }
+.player-card.empty { justify-content: center; color: var(--muted); border-style: dashed; border-left-width: 1px; font-size: 14px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #555; display: inline-block; flex: none; }
+.dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.rules-box { margin-top: 20px; padding: 12px 14px; border: 1px solid var(--line); background: rgba(41, 217, 255, 0.05); color: #cfe9f1; font-size: 15px; }
+.standings { margin-top: 10px; }
+.standings-head { display: block; text-align: center; font-size: clamp(30px, 5vw, 54px); margin: 6px 0 8px; }
+.standing-row { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-left-width: 4px; background: rgba(0, 0, 0, 0.35); flex-wrap: wrap; }
+.room-page .stat { padding: 10px 6px; border: 1px solid var(--line); background: rgba(0,0,0,0.35); text-align: center; }
+.room-page .stat b { display: block; font-family: var(--font-head); font-size: 28px; }
+.room-page .stat span { color: var(--muted); font-size: 13px; }
+@media (max-width: 700px) { .room-page .grid { grid-template-columns: 1fr !important; } }

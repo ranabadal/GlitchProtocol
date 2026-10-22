@@ -131,6 +131,14 @@ export class Heli {
     this.sync(dt, c.fwd, c.side);
   }
 
+  /** Flown by another racer: position and heading come over the network. */
+  puppet(dt: number, x: number, y: number, z: number, heading: number, speed: number): void {
+    this.pos.set(x, y, z);
+    this.heading = heading;
+    this.spin = damp(this.spin, 1, 2, dt);
+    this.sync(dt, Math.min(1, speed / HELI_MAX_SPEED), 0);
+  }
+
   /** Parked: settle on the ground and wind the rotor down. */
   idle(dt: number): void {
     this.spin = damp(this.spin, 0, 0.5, dt);

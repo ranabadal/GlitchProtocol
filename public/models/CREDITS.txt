@@ -4,5 +4,10 @@ robot.glb
   Used for NULL's walker and brute robots. The game recolours it and merges its parts
   into one skinned mesh at load time.
 
-Everything else you see in the game (city, cars, people, drones, turrets, signs, effects,
+soldier.glb
+  "Vanguard" character with Idle / Walk / Run animations from Adobe Mixamo, as shipped in the
+  three.js examples (examples/models/gltf/Soldier.glb). Mixamo characters and animations are
+  royalty-free for use inside projects such as games. Used for the player and the other racers.
+
+Everything else you see in the game (city, cars, pedestrians, drones, turrets, signs, effects,
 music and sound) is generated in code by this project.

@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Avatar } from "@/components/Avatar";
 import { Loading, TopBar, useMe } from "@/components/Shell";
-import { api, ApiError, type Mission } from "@/lib/client/api";
+import { api, ApiError, type Mission, type Room } from "@/lib/client/api";
 
 const BAND_COLORS = ["", "var(--green)", "var(--cyan)", "var(--violet)", "var(--amber)", "var(--red)"];
 const OUTCOME: Record<string, [string, string]> = { success: ["CLEAR", "green"], fail: ["DOWN", "red"], timeout: ["TIME UP", "amber"], abandoned: ["LEFT", ""] };
@@ -17,6 +17,41 @@ export default function Hub() {
   const [msg, setMsg] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [event, setEvent] = useState<{ code: string; name: string; bandLabel: string; live: boolean; playedInstanceId: string | null } | null>(null);
+  const [roomCode, setRoomCode] = useState("");
+  const [roomBusy, setRoomBusy] = useState(false);
+  const [roomMsg, setRoomMsg] = useState<string | null>(null);
+  const [current, setCurrent] = useState<{ code: string; status: string; mode: string } | null>(null);
+
+  useEffect(() => {
+    api<{ room: { code: string; status: string; mode: string } | null }>("/api/rooms").then((r) => setCurrent(r.room)).catch(() => {});
+  }, []);
+
+  async function createRoom(mode: "solo" | "teams") {
+    setRoomBusy(true);
+    setRoomMsg(null);
+    try {
+      const r = await api<Room>("/api/rooms", { method: "POST", json: { mode } });
+      router.push(`/room/${r.code}`);
+    } catch (e) {
+      setRoomMsg(e instanceof Error ? e.message : "Room nahi bana.");
+      setRoomBusy(false);
+    }
+  }
+
+  async function joinRoom(e: React.FormEvent) {
+    e.preventDefault();
+    const c = roomCode.trim().toUpperCase();
+    if (c.length < 4) return;
+    setRoomBusy(true);
+    setRoomMsg(null);
+    try {
+      await api<Room>(`/api/rooms/${encodeURIComponent(c)}/join`, { method: "POST", json: {} });
+      router.push(`/room/${c}`);
+    } catch (err) {
+      setRoomMsg(err instanceof Error ? err.message : "Room join nahi hua.");
+      setRoomBusy(false);
+    }
+  }
 
   async function start(body: { mode: "personal" } | { mode: "event"; eventCode: string }) {
     setBusy(true);
@@ -89,7 +124,7 @@ export default function Hub() {
               <div className="panel-title">Mission control</div>
               {me.openMission ? (
                 <div className="stack">
-                  <p style={{ margin: 0 }}>Tumhara ek mission abhi chalu hai{me.openMission.mode === "event" ? " (event)" : ""}.</p>
+                  <p style={{ margin: 0 }}>Tumhara ek mission abhi chalu hai{me.openMission.mode === "event" ? " (event)" : me.openMission.mode === "room" ? " (multiplayer race)" : ""}.</p>
                   <div className="row wrap">
                     <Link className="btn primary big" href={`/play/${me.openMission.id}`}>▶ Resume mission</Link>
                     <button className="btn red" onClick={() => abandon(me.openMission!.id)}>Chhod do</button>
@@ -122,6 +157,26 @@ export default function Hub() {
           </div>
 
           <div className="stack" style={{ gap: 18 }}>
+            <div className="panel rise mp-panel" style={{ animationDelay: "0.1s" }}>
+              <div className="panel-title">Multiplayer race</div>
+              {current && (
+                <div className="ok-box row wrap" style={{ marginBottom: 12, gap: 10 }}>
+                  <span>Tum room <b className="mono">{current.code}</b> mein ho ({current.status === "playing" ? "race chal rahi hai" : "lobby"}).</span>
+                  <span className="spacer" />
+                  <Link className="btn small primary" href={`/room/${current.code}`}>Room kholo</Link>
+                </div>
+              )}
+              <p className="muted" style={{ marginTop: 0 }}>Ek laptop pe room banao aur code dosto ko batao. Sabko <b>same mission</b> milega, sab ek doosre ko city mein bhaagte dekhenge. Jo pehle mission complete kare, wahi jeetega!</p>
+              <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <button className="btn primary" disabled={roomBusy} onClick={() => createRoom("solo")}>Solo race<br /><small style={{ fontWeight: 500, opacity: 0.8 }}>2–4 players</small></button>
+                <button className="btn primary cyan" disabled={roomBusy} onClick={() => createRoom("teams")}>Team race<br /><small style={{ fontWeight: 500, opacity: 0.8 }}>Team A vs Team B</small></button>
+              </div>
+              <form onSubmit={joinRoom} className="row wrap" style={{ marginTop: 12, gap: 10 }}>
+                <input className="input" placeholder="ROOM CODE" value={roomCode} onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} maxLength={8} style={{ flex: 1, minWidth: 140, letterSpacing: "0.3em" }} aria-label="Room code" />
+                <button className="btn amber" disabled={roomBusy || roomCode.trim().length < 4}>Join room</button>
+              </form>
+              {roomMsg && <div className="error-box" style={{ marginTop: 12 }} role="alert">{roomMsg}</div>}
+            </div>
             <div className="panel rise" style={{ animationDelay: "0.12s" }}>
               <div className="panel-title">Recent missions</div>
               {me.recent.length === 0 ? <p className="muted" style={{ margin: 0 }}>Abhi tak koi mission nahi. Pehla mission shuru karo!</p> : (
@@ -129,7 +184,7 @@ export default function Hub() {
                   {me.recent.map((r) => (
                     <div key={r.instanceId} className="row" style={{ padding: "8px 10px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.05)" }}>
                       <span className={`chip ${OUTCOME[r.outcome]?.[1] ?? ""}`}>{OUTCOME[r.outcome]?.[0] ?? r.outcome}</span>
-                      <span className="muted" style={{ fontSize: 14 }}>T{r.band} · {r.cores}/{r.coresTotal} cores{r.mode === "event" ? " · event" : ""}</span>
+                      <span className="muted" style={{ fontSize: 14 }}>T{r.band} · {r.cores}/{r.coresTotal} cores{r.mode === "event" ? " · event" : r.mode === "room" ? " · race" : ""}</span>
                       <span className="spacer" />
                       <b style={{ fontFamily: "var(--font-head)" }}>{r.score.toLocaleString("en-IN")}</b>
                     </div>

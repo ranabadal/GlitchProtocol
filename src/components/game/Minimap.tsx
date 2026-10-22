@@ -58,6 +58,13 @@ export function Minimap({ hudRef, pose, vaultBuildings, size = 210 }: { hudRef: 
         }
         drawMarker(g, m, x, y, (m.kind === "robot" ? 7 : 8) * dpr, m.kind === "uplink" && hud.cores === hud.coresTotal);
       }
+      // Other racers: coloured dots, stuck to the rim when far.
+      for (const o of hud.racers ?? []) {
+        let [x, y] = screen({ kind: "robot", x: o.x, z: o.z } as MapMarker);
+        const d = Math.hypot(x - R, y - R);
+        if (d > R - 10 * dpr) { x = R + ((x - R) / d) * (R - 10 * dpr); y = R + ((y - R) / d) * (R - 10 * dpr); }
+        racerDot(g, x, y, 6 * dpr, o.color);
+      }
       g.restore();
       drawPlayerArrow(g, R, R, 0, 9 * dpr);
       // Rim with compass.
@@ -109,6 +116,14 @@ export function BigMap({ hud, vaultBuildings, onClose }: { hud: HudState; vaultB
           g.fillText(m.label, x * k, y * k + 22 * dpr);
         }
       }
+      for (const o of h.racers ?? []) {
+        const [ox, oz] = toMap(o.x, o.z);
+        racerDot(g, ox * k, oz * k, 8 * dpr, o.color);
+        g.font = `700 ${12 * dpr}px Rajdhani, sans-serif`;
+        g.fillStyle = o.color;
+        g.textAlign = "center";
+        g.fillText(o.name, ox * k, oz * k - 14 * dpr);
+      }
       const [px, pz] = toMap(h.player.x, h.player.z);
       const ang = Math.atan2(Math.cos(h.player.heading), Math.sin(h.player.heading)) + Math.PI / 2;
       drawPlayerArrow(g, px * k, pz * k, ang, 11 * dpr);
@@ -135,4 +150,15 @@ export function BigMap({ hud, vaultBuildings, onClose }: { hud: HudState; vaultB
       </div>
     </div>
   );
+}
+
+/** Another racer on the map: a dot in their colour with a dark outline. */
+function racerDot(g: CanvasRenderingContext2D, x: number, y: number, r: number, color: string): void {
+  g.beginPath();
+  g.arc(x, y, r, 0, Math.PI * 2);
+  g.fillStyle = color;
+  g.fill();
+  g.lineWidth = Math.max(2, r * 0.35);
+  g.strokeStyle = "rgba(0,0,0,0.85)";
+  g.stroke();
 }

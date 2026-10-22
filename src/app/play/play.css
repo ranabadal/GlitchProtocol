@@ -195,3 +195,23 @@
 @keyframes hero-in { from { transform: translateX(-20px); opacity: 0; } to { transform: none; opacity: 1; } }
 .chip.pink { color: #ff6ad8; border-color: rgba(255, 79, 216, 0.55); }
 @media (max-width: 1100px) { .weapon-bar { transform: translateX(-50%) scale(0.8); transform-origin: bottom center; } .hero-line { bottom: 170px; } }
+
+/* ---------------------------------------------------------------- multiplayer */
+.race-board { width: 240px; padding: 8px 10px; pointer-events: none; }
+.race-teams { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px; text-align: center; }
+.race-teams b { display: block; font-family: var(--font-head); font-size: 22px; line-height: 1.1; }
+.race-teams span { font-size: 11px; letter-spacing: 0.15em; text-transform: uppercase; opacity: 0.85; }
+.race-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin-top: 3px; border-left: 3px solid; background: rgba(0, 0, 0, 0.32); font-size: 14px; }
+.race-row.you { background: rgba(60, 255, 154, 0.12); }
+.race-pos { font-family: var(--font-head); width: 14px; color: var(--muted); }
+.race-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.race-cores { font-family: var(--font-mono); font-size: 12px; color: var(--cyan); }
+.race-score { font-family: var(--font-head); min-width: 44px; text-align: right; }
+.race-off { color: var(--amber); }
+.race-intro { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); z-index: 30; width: min(560px, 92vw); text-align: center; pointer-events: none; }
+.race-intro .glitch { font-size: clamp(28px, 4vw, 44px); }
+.race-intro .hud-card { margin-top: 10px; text-align: left; }
+.race-over { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(2, 8, 10, 0.55); pointer-events: none; }
+.race-over .glitch { font-size: clamp(36px, 6vw, 72px); }
+.results-race { margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
+.sprint-hint { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 12; pointer-events: none; padding: 8px 16px; font-family: var(--font-head); letter-spacing: 0.08em; background: rgba(2, 12, 12, 0.72); border: 1px solid rgba(60, 255, 154, 0.5); color: #eafff5; animation: pulse 1.6s infinite; }

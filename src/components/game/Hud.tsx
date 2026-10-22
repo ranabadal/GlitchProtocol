@@ -22,7 +22,7 @@ function fmt(sec: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function Hud({ hud, title, minimap }: { hud: HudState; title: string; minimap: React.ReactNode }) {
+export function Hud({ hud, title, minimap, race }: { hud: HudState; title: string; minimap: React.ReactNode; race?: React.ReactNode }) {
   const now = performance.now();
   const [, force] = useState(0);
   // Re-render a few times a second so notices fade even when the game is paused.
@@ -89,7 +89,8 @@ export function Hud({ hud, title, minimap }: { hud: HudState; title: string; min
         <div className="hud-lives" aria-label={`${hud.lives} lives`}>
           {Array.from({ length: Math.max(3, hud.lives) }).map((_, i) => <span key={i} className={i < hud.lives ? "on" : ""}>⬢</span>)}
         </div>
-        <div className="hud-keys mono">1-4 weapon · V slap · C roll · F ride · M map · Esc</div>
+        <div className="hud-keys mono">Shift daudo · 1-4 weapon · V slap · C roll · F ride · M map · Esc</div>
+        {race}
       </div>
 
       {/* Vitals */}

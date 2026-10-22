@@ -1,12 +1,15 @@
 import * as THREE from "three";
 import { COUNTDOWN_MS } from "@/lib/shared/mission";
 import { blockCenter, getCity, HALF, roadPos } from "@/lib/shared/city";
+import { loadSoldier } from "./actors/Character";
 import { Crowd } from "./actors/Crowd";
 import { Player, EMP_COOLDOWN } from "./actors/Player";
 import { createRobotVisual, DroneVisual, loadRobotTemplate, TurretVisual, type RobotTemplate } from "./actors/RobotModel";
 import { Robots } from "./actors/Robots";
 import { Vehicles } from "./actors/Vehicles";
 import { Heli, helipads, Metro } from "./actors/Rides";
+import { Remotes } from "./actors/Remotes";
+import type { Pose, RemotePose } from "@/lib/services/rooms";
 import { Sound } from "./audio/Sound";
 import { Colliders } from "./Colliders";
 import { Bubbles } from "./fx/Bubbles";
@@ -58,6 +61,8 @@ export class Game {
   private crowd!: Crowd;
   private robots!: Robots;
   private helis: Heli[] = [];
+  /** Other racers in a multiplayer room. */
+  remotes: Remotes | null = null;
   private metro: Metro | null = null;
   private moon!: THREE.DirectionalLight;
   private hemi!: THREE.HemisphereLight;
@@ -91,15 +96,16 @@ export class Game {
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = this.q.shadows;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, this.q.farClip);
     this.input = new Input(opts.canvas, (locked) => opts.callbacks?.onPointerLockChange?.(locked));
     this.ready = this.init();
   }
 
   private async init(): Promise<void> {
-    const template = await robotTemplate();
+    const [template, character] = await Promise.all([robotTemplate(), loadSoldier()]);
     if (this.disposed) return;
+    this.character = character;
     const opts = this.opts;
     const m = opts.mission;
     const scene = this.scene;
@@ -132,22 +138,14 @@ export class Game {
     scene.add(this.hemi);
     this.moon = new THREE.DirectionalLight(0x9fb8ff, 0.7);
     this.moon.position.set(60, 120, -90);
-    if (this.q.shadows) {
-      this.moon.castShadow = true;
-      this.moon.shadow.mapSize.set(2048, 2048);
-      const c = this.moon.shadow.camera;
-      c.left = c.bottom = -45;
-      c.right = c.top = 45;
-      c.near = 1;
-      c.far = 300;
-      this.moon.shadow.bias = -0.0008;
-    }
+    this.configureShadows();
     scene.add(this.moon, this.moon.target);
 
     // City and sky.
     const hollow = new Set((m?.vaults ?? []).map((v) => v.buildingId));
     this.city = new CityView(this.colliders, { hollow });
     world.uTime = this.city.uniforms.uTime;
+    world.uDay = this.city.uniforms.uDay;
     scene.add(this.city.group);
     this.sky = new Sky(this.city.uniforms.uGlyphs.value, this.q.rainParticles, world.uTime, this.city.uniforms.uCorrupt);
     scene.add(this.sky.dome, this.sky.rain);
@@ -184,7 +182,7 @@ export class Game {
     });
 
     if (m && opts.bridge && !opts.attract) {
-      this.player = new Player(world, this.vehicles, this.robots, opts.hue ?? 150, { helis: this.helis, metro: this.metro });
+      this.player = new Player(world, this.vehicles, this.robots, opts.hue ?? 150, { helis: this.helis, metro: this.metro }, character);
       this.player.settings = this.settings;
       this.sound.voice.enabled = this.settings.voices;
       world.player = this.player;
@@ -204,6 +202,7 @@ export class Game {
           this.sound.overheat();
         }
       };
+      this.remotes = new Remotes(world, this.vehicles, character);
       const sp = this.director.spawnPoint;
       this.player.spawn(sp.x, sp.z, sp.heading);
       this.player.shieldUntil = 0;
@@ -221,7 +220,7 @@ export class Game {
 
     this.resize();
     window.addEventListener("resize", this.resize);
-    this.post = new PostFX(this.renderer, scene, this.camera, this.q.bloom);
+    this.post = new PostFX(this.renderer, scene, this.camera, { bloom: this.q.bloom, fxaa: this.q.fxaa, ao: this.q.ao });
     this.setLight(this.settings.light, false);
     this.resize();
     await this.prewarm(template);
@@ -269,34 +268,84 @@ export class Game {
   }
 
   private sunOffset = new THREE.Vector3(60, 120, -90);
+  private character: import("./actors/Character").SoldierTemplate | null = null;
 
-  /** A tiny scene with neon strips (and a sky by day), baked into reflections for cars and robots. */
+  /**
+   * Reflections and sky light: a small stand-in world (gradient sky with the sun, hazy
+   * horizon, a ring of buildings with windows, the street) baked into an environment map.
+   * Glass, car paint and puddles reflect it; it also lights shadowed sides softly.
+   */
   private environment(day: number): THREE.Texture {
     const env = new THREE.Scene();
-    const skyCol = new THREE.Color(0x050a0d).lerp(new THREE.Color(0xa8c8e8), day);
-    env.add(new THREE.Mesh(new THREE.SphereGeometry(50, 16, 8), new THREE.MeshBasicMaterial({ color: skyCol, side: THREE.BackSide })));
+    const sunDir = this.sunOffset.clone().normalize();
+    // Sky dome with per-vertex colours.
+    const skyGeo = new THREE.SphereGeometry(60, 48, 24);
+    const pos = skyGeo.getAttribute("position");
+    const cols = new Float32Array(pos.count * 3);
+    const night = { top: new THREE.Color(0x02070a), hor: new THREE.Color(0x0a1a18) };
+    const dusk = { top: new THREE.Color(0x2c2a5a), hor: new THREE.Color(0xffa070) };
+    const dayC = { top: new THREE.Color(0x3d78c8), hor: new THREE.Color(0xd2e2ee) };
+    const pick = (a: { top: THREE.Color; hor: THREE.Color }, b: { top: THREE.Color; hor: THREE.Color }, k: number) => ({ top: a.top.clone().lerp(b.top, k), hor: a.hor.clone().lerp(b.hor, k) });
+    const pal = day < 0.5 ? pick(night, dusk, day * 2) : pick(dusk, dayC, day * 2 - 1);
+    const v = new THREE.Vector3(), c = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).normalize();
+      const y = Math.max(0, v.y);
+      c.copy(pal.hor).lerp(pal.top, Math.pow(y, 0.55));
+      // Sun glow.
+      const sd = Math.max(0, v.dot(sunDir));
+      const glow = (Math.pow(sd, 24) * 1.4 + Math.pow(sd, 4) * 0.25) * day;
+      c.r += glow * 1.0; c.g += glow * (0.75 + 0.2 * day); c.b += glow * (0.45 + 0.4 * day);
+      if (v.y < 0) c.multiplyScalar(0.6);
+      cols.set([c.r, c.g, c.b], i * 3);
+    }
+    skyGeo.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+    env.add(new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
     if (day > 0) {
-      const ground = new THREE.Mesh(new THREE.CircleGeometry(49, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x050a0d).lerp(new THREE.Color(0x5b5a55), day) }));
-      ground.position.y = -6;
-      env.add(ground);
-      const sun = new THREE.Mesh(new THREE.SphereGeometry(4, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 5.6, 5).multiplyScalar(day) }));
-      sun.position.copy(this.sunOffset).normalize().multiplyScalar(40);
+      const sun = new THREE.Mesh(new THREE.SphereGeometry(2.4, 12, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color(12, 10.5, 8.5).multiplyScalar(day) }));
+      sun.position.copy(sunDir).multiplyScalar(55);
       env.add(sun);
     }
+    // Street level.
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(58, 24).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: new THREE.Color(0x07090b).lerp(new THREE.Color(0x3a3a3a), day) }));
+    ground.position.y = -2;
+    env.add(ground);
+    // A ring of buildings: light facades by day, dark with lit windows at night.
+    const rnd = mulberry(5);
+    const wallDay = [0x8d8b86, 0x46525a, 0xa48d73, 0xb7b4ae, 0x2a3236];
+    for (let i = 0; i < 26; i++) {
+      const a = (i / 26) * Math.PI * 2 + rnd() * 0.1;
+      const h = 8 + rnd() * 26, w = 6 + rnd() * 6, r = 30 + rnd() * 10;
+      const col = new THREE.Color(0x0b0f12).lerp(new THREE.Color(wallDay[i % wallDay.length]), day);
+      const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshBasicMaterial({ color: col }));
+      b.position.set(Math.cos(a) * r, h / 2 - 2, Math.sin(a) * r);
+      b.lookAt(0, h / 2 - 2, 0);
+      env.add(b);
+      // Window bands.
+      for (let f = 3; f < h - 1; f += 3.5) {
+        const lit = rnd() < 0.45;
+        const wc = lit ? new THREE.Color(1.6, 1.3, 0.9).multiplyScalar(1 - day * 0.7) : new THREE.Color(0.03, 0.05, 0.07).lerp(new THREE.Color(0.25, 0.32, 0.38), day);
+        const band = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.86, 1.5), new THREE.MeshBasicMaterial({ color: wc }));
+        band.position.copy(b.position).setY(f - 2);
+        band.lookAt(0, f - 2, 0);
+        band.translateZ(w / 2 + 0.05);
+        env.add(band);
+      }
+    }
+    // Neon accents (they matter most at night).
     const strip = (color: number, x: number, y: number, z: number, w: number, h: number, d: number, k = 1) => {
-      const mm = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(k) }));
+      const mm = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(k * (1 - day * 0.8)) }));
       mm.position.set(x, y, z);
       env.add(mm);
     };
-    strip(0x2bff9a, 0, 18, -30, 60, 1.5, 1, 3);
-    strip(0x29d9ff, -30, 10, 0, 1, 1.2, 60, 3);
-    strip(0xff3aa8, 30, 14, 0, 1, 1, 50, 2.5);
-    strip(0xffb229, 0, 6, 30, 40, 1, 1, 2);
-    strip(0x9fb8ff, 0, 40, 0, 30, 1, 30, 1.2);
-    strip(0x113322, 0, -20, 0, 80, 1, 80, 1);
+    strip(0x2bff9a, 0, 10, -26, 30, 1.2, 1, 3);
+    strip(0x29d9ff, -26, 7, 0, 1, 1, 30, 3);
+    strip(0xff3aa8, 26, 9, 0, 1, 1, 26, 2.5);
+    strip(0xffb229, 0, 4, 26, 24, 1, 1, 2);
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    const rt = pmrem.fromScene(env, 0.03);
+    const rt = pmrem.fromScene(env, 0.02);
     pmrem.dispose();
+    env.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) { m.geometry.dispose(); (m.material as THREE.Material).dispose(); } });
     return rt.texture;
   }
 
@@ -371,7 +420,15 @@ export class Game {
     return out.set(k(p0.x, p1.x, p2.x, p3.x), k(p0.y, p1.y, p2.y, p3.y), k(p0.z, p1.z, p2.z, p3.z));
   }
 
+  private camOverride: { p: THREE.Vector3; l: THREE.Vector3 } | null = null;
+
   private attractCamera(dt: number): void {
+    if (this.camOverride) {
+      this.camera.position.copy(this.camOverride.p);
+      this.camera.lookAt(this.camOverride.l);
+      this.world.listenerPos.copy(this.camOverride.p);
+      return;
+    }
     if (!this.attractPts.length) return;
     this.attractT = (this.attractT + dt / 95) % 1;
     const p = this.pathPoint(this.attractT, new THREE.Vector3());
@@ -398,7 +455,9 @@ export class Game {
   private frame = (now: number): void => {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.frame);
-    let dt = Math.min(this.debugRealtime ? 1 : 0.05, (now - this.last) / 1000);
+    // The first frame's timestamp can be older than the moment loading finished (long shader
+    // compiles on slow laptops): never let time run backwards.
+    let dt = Math.max(0, Math.min(this.debugRealtime ? 1 : 0.05, (now - this.last) / 1000));
     this.last = now;
     this.trackFps(dt);
     if (this.paused) dt = 0;
@@ -439,6 +498,7 @@ export class Game {
     if (truck?.alive) this.vehicles.extraObstacles.push({ x: truck.pos.x, z: truck.pos.z, r: 2.6 });
     this.crowd.threats = alive.map((r) => r.pos);
 
+    this.remotes?.update(dt);
     this.vehicles.update(dt);
     if (this.player && this.introDone) this.player.postUpdate(dt);
     const pc = this.player?.car;
@@ -457,9 +517,12 @@ export class Game {
     this.fx.update(dt);
     this.bubbles.update(w.time);
     if (this.player) {
-      const p = this.player.pos;
-      this.moon.position.set(p.x + this.sunOffset.x, this.sunOffset.y, p.z + this.sunOffset.z);
-      this.moon.target.position.set(p.x, 0, p.z);
+      // Follow the player, snapped to whole shadow-map texels so shadow edges don't shimmer.
+      const p = this.player.car?.pos ?? this.player.heli?.pos ?? this.player.pos;
+      const texel = this.q.shadows ? (2 * this.q.shadowRange) / (this.q.shadowSize || 2048) : 1;
+      const sx = Math.round(p.x / texel) * texel, sz = Math.round(p.z / texel) * texel;
+      this.moon.position.set(sx + this.sunOffset.x, this.sunOffset.y, sz + this.sunOffset.z);
+      this.moon.target.position.set(sx, 0, sz);
     }
 
     // Screen effects.
@@ -473,7 +536,7 @@ export class Game {
     this.post.set({ time: w.time, damage: this.damagePulse, glitch, heal: d?.phase === "won" ? Math.min(1, d.winT / 2) : 0, speed });
     if (!this.debugNoRender) this.post.render(this.scene, this.camera, dt);
 
-    this.hudT -= dt || 1 / 60;
+    this.hudT = Math.min(this.hudT, 1 / 12) - (dt || 1 / 60);
     if (this.player && this.hudT <= 0 && !this.waiting) {
       this.hudT = 1 / 12;
       this.opts.callbacks?.onHud(this.hud());
@@ -507,12 +570,35 @@ export class Game {
       this.renderer.shadowMap.enabled = q.shadows;
       this.moon.castShadow = q.shadows;
     }
+    this.configureShadows();
     this.post.dispose();
-    this.post = new PostFX(this.renderer, this.scene, this.camera, q.bloom);
+    this.post = new PostFX(this.renderer, this.scene, this.camera, { bloom: q.bloom, fxaa: q.fxaa, ao: q.ao });
     this.setLight(this.settings.light, false);
     this.camera.far = q.farClip;
     this.camera.updateProjectionMatrix();
     this.resize();
+  }
+
+  /** Sun shadows: a box that follows the player; sharper and bigger on better laptops. */
+  private configureShadows(): void {
+    const q = this.q;
+    this.moon.castShadow = q.shadows;
+    if (!q.shadows) return;
+    const size = q.shadowSize || 2048;
+    if (this.moon.shadow.mapSize.x !== size) {
+      this.moon.shadow.mapSize.set(size, size);
+      this.moon.shadow.map?.dispose();
+      this.moon.shadow.map = null;
+    }
+    const c = this.moon.shadow.camera;
+    c.left = c.bottom = -q.shadowRange;
+    c.right = c.top = q.shadowRange;
+    c.near = 1;
+    c.far = 420;
+    c.updateProjectionMatrix();
+    this.moon.shadow.bias = -0.0004;
+    this.moon.shadow.normalBias = 0.04;
+    this.moon.shadow.radius = this.level === "high" ? 3 : 2;
   }
 
   get quality(): QualityLevel {
@@ -569,6 +655,7 @@ export class Game {
       heroLine: d.heroLine,
       shards: d.shards ? d.shards.count : null,
       opTitle: this.opts.mission?.op ?? "classic",
+      racers: this.remotes?.list() ?? [],
     };
   }
 
@@ -583,6 +670,24 @@ export class Game {
     this.director?.setStart(startAt);
     this.introDone = Date.now() >= this.startLocal;
     if (this.introDone) { this.director?.begin(); this.sound.startMusic(); }
+  }
+
+  /** What the other racers' screens need to draw me (sent several times a second in a race). */
+  netPose(): Pose | null {
+    const p = this.player;
+    if (!p) return null;
+    const r2 = (v: number) => Math.round(v * 100) / 100;
+    if (!p.alive) return { x: r2(p.pos.x), y: r2(p.pos.y), z: r2(p.pos.z), h: r2(p.yaw), s: 0, m: "dead" };
+    if (p.car) return { x: r2(p.car.pos.x), y: 0, z: r2(p.car.pos.z), h: r2(p.car.heading), s: r2(Math.abs(p.car.speed)), m: "car", v: p.car.variant };
+    if (p.heli) return { x: r2(p.heli.pos.x), y: r2(p.heli.pos.y), z: r2(p.heli.pos.z), h: r2(p.heli.heading), s: r2(p.heli.speed), m: "heli" };
+    if (p.train) return { x: r2(p.pos.x), y: r2(p.pos.y), z: r2(p.pos.z), h: r2(p.yaw), s: 0, m: "train" };
+    const firing = this.input.fire || p.aiming;
+    return { x: r2(p.pos.x), y: r2(p.pos.y), z: r2(p.pos.z), h: r2(p.yaw), s: r2(Math.min(30, Math.hypot(p.vel.x, p.vel.z))), m: "foot", w: p.weapon, f: firing, a: r2(Math.max(-1.5, Math.min(1.5, p.camPitch))) };
+  }
+
+  /** Latest positions of the other racers from the server. */
+  setRemotes(others: RemotePose[], serverNow: number, colorOf: (userId: string) => string): void {
+    this.remotes?.push(others, serverNow, colorOf);
   }
 
   /** Live position for the minimap (read every animation frame). */
@@ -602,6 +707,8 @@ export class Game {
     /** Skip drawing (keeps the last frame on screen) so slow software GPUs can screenshot overlays quickly. */
     renderOff: (on: boolean) => { this.debugNoRender = on; },
     god: (on: boolean) => { if (this.player) this.player.god = on; },
+    /** Attract mode only: park the camera somewhere (for screenshots). */
+    camera: (x: number, y: number, z: number, lx: number, ly: number, lz: number) => { this.camOverride = { p: new THREE.Vector3(x, y, z), l: new THREE.Vector3(lx, ly, lz) }; },
     teleport: (x: number, z: number) => {
       const p = this.player;
       if (!p) return;
@@ -662,6 +769,7 @@ export class Game {
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.resize);
     this.input.dispose();
+    this.remotes?.dispose();
     this.sound.dispose();
     this.post?.dispose();
     this.scene.traverse((o) => {

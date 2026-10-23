@@ -374,7 +374,8 @@ export class Player implements PlayerLike {
     const hspeed = Math.hypot(this.vel.x, this.vel.z);
     this.rig.root.position.copy(this.pos);
     this.rig.root.rotation.y = this.yaw;
-    this.rig.root.visible = true;
+    // Getting into a car / helicopter / train happens earlier in this same step: stay hidden then.
+    this.rig.root.visible = !this.riding;
     const gunUp = this.weapon === "blaster" || this.weapon === "scatter" ? this.aimBlend : this.aimBlend * 0.3;
     this.rig.update(dt, {
       speed: hspeed, grounded: this.grounded, aim: this.hacking ? 0 : gunUp, pitch: this.camPitch, recoil: this.recoil, hack: this.hacking, dead: false, hurt: this.hurt,
